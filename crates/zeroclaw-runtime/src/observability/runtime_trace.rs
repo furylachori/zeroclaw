@@ -418,6 +418,7 @@ mod tests {
                 success: None,
                 message: Some(format!("event-{i}")),
                 payload: serde_json::json!({ "i": i }),
+                agent_alias: None,
             };
             logger.append(&event).unwrap();
         }
@@ -446,6 +447,7 @@ mod tests {
             success: Some(false),
             message: Some("boom".into()),
             payload: serde_json::json!({ "error": "boom" }),
+            agent_alias: None,
         };
         logger.append(&event).unwrap();
 
