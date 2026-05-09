@@ -74,6 +74,15 @@ pub struct AuditEvent {
     pub action: Option<Action>,
     pub result: Option<ExecutionResult>,
     pub security: SecurityContext,
+    /// Owning agent's alias for #6272 multi-agent audit attribution.
+    /// `None` on system-level events (boot, migration, scheduler ticks
+    /// not bound to any specific agent) and on pre-v0.8.0 entries.
+    /// Audit storage stays at `<install>/audit/` (global, not
+    /// per-agent), so an agent delete does NOT remove its prior audit
+    /// trail; this field lets queries reconstruct per-agent activity
+    /// after the fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_alias: Option<String>,
 
     /// Monotonically increasing sequence number.
     #[serde(default)]
@@ -105,6 +114,7 @@ impl AuditEvent {
                 rate_limit_remaining: None,
                 sandbox_backend: None,
             },
+            agent_alias: None,
             sequence: 0,
             prev_hash: String::new(),
             entry_hash: String::new(),
@@ -124,6 +134,16 @@ impl AuditEvent {
             user_id,
             username,
         });
+        self
+    }
+
+    /// Set the owning agent's alias for #6272 multi-agent attribution.
+    /// Builder method so existing AuditEvent construction sites can
+    /// add the alias without an explicit field assignment. Pass the
+    /// alias bound at agent-loop entry (P10/P12 binding).
+    #[must_use]
+    pub fn with_agent_alias(mut self, agent_alias: impl Into<String>) -> Self {
+        self.agent_alias = Some(agent_alias.into());
         self
     }
 
