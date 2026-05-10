@@ -40,7 +40,6 @@ another_fake = 42
     );
     assert!(
         (config
-            .providers
             .first_model_provider()
             .and_then(|e| e.temperature)
             .unwrap_or(0.7)
@@ -65,7 +64,7 @@ fn config_wrong_type_for_temperature_fails() {
     let toml_str = r#"
 default_temperature = "hot"
 "#;
-    // V1's `default_temperature` is folded into providers.models.<x>.default
+    // V1's `default_temperature` is folded into model_providers.<x>.default
     // by `migrate_to_current`. A non-f64 value should fail at the migration
     // boundary because the synthesized model_provider entry can't deserialize
     // a string into Option<f64>.
@@ -80,15 +79,14 @@ default_temperature = "hot"
 fn config_out_of_range_temperature_fails() {
     // Temperature validation now happens at the model_provider level.
     let toml_str = r#"
-[providers.models.openai.default]
+[model_providers.openai.default]
 temperature = 99.0
 "#;
     let config: Config = toml::from_str(toml_str).expect("parses");
     // Out-of-range temperature is stored but caught by validate().
     assert!(
         config
-            .providers
-            .models
+            .model_providers
             .find("openai", "default")
             .expect("entry exists")
             .temperature
@@ -99,14 +97,13 @@ temperature = 99.0
 #[test]
 fn config_negative_temperature_fails() {
     let toml_str = r#"
-[providers.models.openai.default]
+[model_providers.openai.default]
 temperature = -0.5
 "#;
     let config: Config = toml::from_str(toml_str).expect("parses");
     assert!(
         config
-            .providers
-            .models
+            .model_providers
             .find("openai", "default")
             .expect("entry exists")
             .temperature
@@ -398,7 +395,6 @@ fn config_empty_toml_uses_default_temperature() {
     let config = migrate("");
     assert!(
         (config
-            .providers
             .first_model_provider()
             .and_then(|e| e.temperature)
             .unwrap_or(0.7)
@@ -425,7 +421,6 @@ fn config_only_temperature_parses() {
     let config = migrate("default_temperature = 1.2\ndefault_provider = \"openai\"\n");
     assert!(
         (config
-            .providers
             .first_model_provider()
             .and_then(|e| e.temperature)
             .unwrap_or(0.7)
@@ -452,7 +447,6 @@ value = 123
     );
     assert!(
         (config
-            .providers
             .first_model_provider()
             .and_then(|e| e.temperature)
             .unwrap_or(0.7)
@@ -610,7 +604,6 @@ fn config_empty_parses_with_all_defaults() {
     assert!(config.channels.whatsapp.is_empty());
     assert!(
         (config
-            .providers
             .first_model_provider()
             .and_then(|e| e.temperature)
             .unwrap_or(0.7)

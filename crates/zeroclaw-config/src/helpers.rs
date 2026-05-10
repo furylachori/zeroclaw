@@ -8,7 +8,7 @@ use crate::traits::{PropFieldInfo, PropKind};
 /// type's own `get_prop` / `set_prop` expects.
 ///
 /// HashMap keys are user-controlled and may contain dots, URLs, or hostnames
-/// (for example `providers.models.custom:https://example.invalid/v1.api-key`).
+/// (for example `model_providers.custom:https://example.invalid/v1.api-key`).
 /// Current map-keyed config sections expose leaf fields, so split from the
 /// right and preserve any dots inside the runtime key.
 ///

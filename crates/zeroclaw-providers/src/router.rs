@@ -178,7 +178,7 @@ impl RouterModelProvider {
 /// model_provider from the route table based on per-provider pricing maps.
 ///
 /// Pricing is keyed by model_provider name (the alias under
-/// `[providers.models.<model_provider>.<alias>]`); each model_provider's pricing map
+/// `[model_providers.<model_provider>.<alias>]`); each model_provider's pricing map
 /// holds user-defined keys (model identifiers, optionally suffixed with
 /// `.input` / `.output`) mapped to USD-per-1M-token rates.
 #[derive(Debug, Clone)]

@@ -579,7 +579,7 @@ impl Agent {
             policy
         });
 
-        let primary_model_provider = config.providers.first_model_provider();
+        let primary_model_provider = config.first_model_provider();
         let memory: Arc<dyn Memory> = zeroclaw_memory::create_memory_for_agent(
             config,
             agent_alias,
@@ -685,10 +685,7 @@ impl Agent {
             }
         }
 
-        let provider_name = config
-            .providers
-            .first_model_provider_type()
-            .unwrap_or("openrouter");
+        let provider_name = config.first_model_provider_type().unwrap_or("openrouter");
 
         let model_name = match primary_model_provider
             .and_then(|e| e.model.as_deref())
@@ -696,13 +693,13 @@ impl Agent {
             .filter(|m| !m.is_empty())
         {
             Some(m) => m.to_string(),
-            None => match config.providers.resolve_default_model() {
+            None => match config.resolve_default_model() {
                 Some(m) => {
                     tracing::warn!(
                         model_provider = provider_name,
                         model = %m,
                         "fallback model_provider has no `model` set; using first configured \
-                         providers.models entry as default. Set [providers.models.{provider_name}] \
+                         providers.models entry as default. Set [model_providers.{provider_name}] \
                          model = \"...\" to silence this warning.",
                     );
                     m
@@ -710,7 +707,7 @@ impl Agent {
                 None => {
                     anyhow::bail!(
                         "no model configured: providers.models is empty or has no `model` field \
-                         set. Configure at least one [providers.models.<type>.<alias>] \
+                         set. Configure at least one [model_providers.<type>.<alias>] \
                          model = \"...\" or define a [[model_routes]] hint.",
                     )
                 }
@@ -726,7 +723,7 @@ impl Agent {
                 primary_model_provider.and_then(|e| e.api_key.as_deref()),
                 primary_model_provider.and_then(|e| e.uri.as_deref()),
                 &config.reliability,
-                &config.providers.model_routes,
+                &config.model_routes,
                 &model_name,
                 &provider_runtime_options,
             )?;
@@ -740,7 +737,6 @@ impl Agent {
         };
 
         let route_model_by_hint: HashMap<String, String> = config
-            .providers
             .model_routes
             .iter()
             .map(|route| (route.hint.clone(), route.model.clone()))
@@ -1776,15 +1772,12 @@ pub async fn run(
         // When a model_provider override is specified, ensure that model_provider type exists
         // in models and is set as the first (and only) entry for routing purposes.
         if let Some((type_key, alias_key)) = p.split_once('.') {
-            effective_config
-                .providers
-                .models
-                .ensure(type_key, alias_key);
+            effective_config.model_providers.ensure(type_key, alias_key);
         } else {
-            effective_config.providers.models.ensure(&p, "default");
+            effective_config.model_providers.ensure(&p, "default");
         }
     }
-    if let Some(entry) = effective_config.providers.first_model_provider_mut() {
+    if let Some(entry) = effective_config.first_model_provider_mut() {
         if let Some(m) = model_override {
             entry.model = Some(m);
         }
@@ -1794,7 +1787,6 @@ pub async fn run(
     let mut agent = Agent::from_config(&effective_config, agent_alias).await?;
 
     let provider_name = effective_config
-        .providers
         .first_model_provider_type()
         .unwrap_or("openrouter")
         .to_string();
@@ -1803,13 +1795,12 @@ pub async fn run(
     // as a cheap secondary lookup and emit "<unresolved>" only if nothing matches —
     // never silently substitute a hardcoded vendor model.
     let model_name = effective_config
-        .providers
         .first_model_provider()
         .and_then(|e| e.model.as_deref())
         .map(str::trim)
         .filter(|m| !m.is_empty())
         .map(ToString::to_string)
-        .or_else(|| effective_config.providers.resolve_default_model())
+        .or_else(|| effective_config.resolve_default_model())
         .unwrap_or_else(|| "<unresolved>".to_string());
 
     agent.observer.record_event(&ObserverEvent::AgentStart {
@@ -2657,8 +2648,7 @@ mod tests {
             // operator URL goes in the `uri` field (post-Phase 6
             // operators no longer put URLs in the outer type key).
             let entry = config
-                .providers
-                .models
+                .model_providers
                 .ensure("custom", "default")
                 .expect("custom model_provider type slot");
             entry.api_key = Some("test-key".to_string());
@@ -2683,7 +2673,6 @@ mod tests {
             zeroclaw_config::schema::RiskProfileConfig::default(),
         );
         let provider_alias = config
-            .providers
             .first_model_provider_type()
             .expect("model_provider configured above")
             .to_string();

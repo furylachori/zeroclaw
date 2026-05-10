@@ -14,11 +14,11 @@
 //! - **`providers.fallback` eradicated**
 //! - **`providers.models` flat → aliased**: V2 `HashMap<id, ModelProviderConfig>`
 //!   → V3 `HashMap<provider_type, HashMap<alias, ModelProviderConfig>>`
-//! - **`cost.prices` removed** → folded into `providers.models.<type>.<alias>.pricing` inline
+//! - **`cost.prices` removed** → folded into `model_providers.<type>.<alias>.pricing` inline
 //! - **`channels.<type>` shape**: V2 `Option<T>` → V3 `HashMap<String, T>` (channel aliasing)
 //! - **`channels.discord_history` removed** → folded into `channels.discord.<alias>.archive = true`
 //! - **`agents.<id>` inline brain fields** (`provider`, `model`, `temperature`, `api_key`)
-//!   → synthesized into `providers.models.<provider>.agent_<id>` and replaced with
+//!   → synthesized into `model_providers.<provider>.agent_<id>` and replaced with
 //!   `model_provider = "<provider>.agent_<id>"` alias reference
 //! - **V1/V2 `(custom|anthropic-custom):<url>` colon-URL provider strings**
 //!   → split during migration: the prefix becomes the V3 provider type key,
@@ -92,7 +92,7 @@ pub struct V2Config {
 
     /// V3 replaces inline brain fields on each agent with model-provider
     /// alias references; brain fields surface as new entries under
-    /// `providers.models.<provider>.agent_<id>`.
+    /// `model_providers.<provider>.agent_<id>`.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub agents: HashMap<String, toml::Value>,
 
@@ -283,29 +283,57 @@ impl V2Config {
 
         // 6'. T13: route-array `provider` → `model_provider` field rename.
         //     V2 spelled the routing target as `provider` on
-        //     [[providers.model_routes]] and [[providers.embedding_routes]];
+        //     [[model_routes]] and [[embedding_routes]];
         //     V3 spells it `model_provider` so the qualifier disambiguates
         //     from TTS / transcription providers. The runtime serde alias was
         //     stripped, so the rename has to land at migration time.
         rename_route_provider_field(&mut new_providers, "model_routes");
         rename_route_provider_field(&mut new_providers, "embedding_routes");
+        // V2 also accepted top-level `[[model_routes]]` / `[[embedding_routes]]`
+        // (alongside the nested `[providers.<routes_key>]` form). Run the
+        // `provider` → `model_provider` rename on those too so V3 serde
+        // accepts them.
+        rename_route_provider_field(&mut passthrough, "model_routes");
+        rename_route_provider_field(&mut passthrough, "embedding_routes");
 
         // 6a. T8: TTS subsystem promotion — V2 `[tts.<type>]` per-provider
-        //     blocks → V3 `[providers.tts.<type>.<alias>]`. The bare
+        //     blocks → V3 `[tts_providers.<type>.<alias>]`. The bare
         //     `tts.default_provider = "openai"` scalar gets rewritten as
         //     dotted alias `"openai.default"` (V3 uses dotted aliases).
         fold_v2_tts_into_providers(&mut passthrough, &mut new_providers);
 
         // Transcription: V2 `[transcription.<family>]` sub-blocks + the Groq
         // fields on `[transcription]` directly fold into V3
-        // `[providers.transcription.<family>.default]`. The legacy
+        // `[transcription_providers.<family>.default]`. The legacy
         // `default_provider` / `default_transcription_provider` keys are
         // dropped — there is no global default-provider concept anymore;
         // per-agent `agent.<X>.transcription_provider` is the join.
         fold_v2_transcription_into_providers(&mut passthrough, &mut new_providers);
 
+        // V3 hoists what was `[providers.{models,tts,transcription}]` onto the
+        // top-level config as kind-qualified keys (`model_providers`,
+        // `tts_providers`, `transcription_providers`). Routes also hoist.
+        if let Some(models) = new_providers.remove("models") {
+            passthrough.insert("model_providers".to_string(), models);
+        }
+        if let Some(tts) = new_providers.remove("tts") {
+            passthrough.insert("tts_providers".to_string(), tts);
+        }
+        if let Some(transcription) = new_providers.remove("transcription") {
+            passthrough.insert("transcription_providers".to_string(), transcription);
+        }
+        if let Some(routes) = new_providers.remove("model_routes") {
+            passthrough.insert("model_routes".to_string(), routes);
+        }
+        if let Some(routes) = new_providers.remove("embedding_routes") {
+            passthrough.insert("embedding_routes".to_string(), routes);
+        }
         if !new_providers.is_empty() {
-            passthrough.insert("providers".to_string(), toml::Value::Table(new_providers));
+            tracing::warn!(
+                target: "migration",
+                "[providers] residual keys dropped during V3 hoist: {:?}",
+                new_providers.keys().collect::<Vec<_>>()
+            );
         }
         if let Some(remaining_cost) = cost_passthrough {
             passthrough.insert("cost".to_string(), remaining_cost);
@@ -831,7 +859,7 @@ fn fold_providers_globals_into_models(
     if any_value_globals {
         tracing::info!(
             target: "migration",
-            "[providers] globals folded onto providers.models.{target_type}.{target_alias}"
+            "[providers] globals folded onto model_providers.{target_type}.{target_alias}"
         );
     }
 }
@@ -865,7 +893,7 @@ fn strip_cost_prices(cost_value: toml::Value) -> (Option<toml::Value>, toml::Tab
 /// by composite `"<provider>/<model>"` identifiers that don't carry the V3
 /// `<provider_type>.<alias>` path, so any automatic remap is heuristic
 /// and fragile. Operators paste the rates manually under the right V3
-/// `[providers.models.<type>.<alias>].pricing` block; the INFO logs name
+/// `[model_providers.<type>.<alias>].pricing` block; the INFO logs name
 /// the model id and last-known input/output rates to make that easy.
 fn drop_cost_prices_with_logs(prices: &toml::Table) {
     for (model_id, price) in prices {
@@ -879,7 +907,7 @@ fn drop_cost_prices_with_logs(prices: &toml::Table) {
         tracing::info!(
             target: "migration",
             "[cost.prices.{model_id}] dropped (V3 puts pricing on each \
-             [providers.models.<type>.<alias>] block); last-known rates: \
+             [model_providers.<type>.<alias>] block); last-known rates: \
              input={input:?} output={output:?}"
         );
     }
@@ -1151,7 +1179,7 @@ fn drain_enabled_keep(channel_type: &str, instance: &mut toml::Table) -> bool {
 /// references / per-agent runtime overrides.
 ///
 /// - **Brain fold** (already covered before T14): for each agent with a
-///   `provider` string, synthesize a `providers.models.<provider>.agent_<id>`
+///   `provider` string, synthesize a `model_providers.<provider>.agent_<id>`
 ///   entry with `{model, api_key, temperature}` and replace the agent's
 ///   brain with `model_provider = "<provider>.agent_<id>"`.
 /// - **T14a max_iterations rename**: V2 `max_iterations: usize` →
@@ -1211,20 +1239,15 @@ fn synthesize_agent_brains(
             if let Some(t) = temperature {
                 entry.insert("temperature".to_string(), t);
             }
-            let providers_value = passthrough
-                .entry("providers".to_string())
+            let model_providers_value = passthrough
+                .entry("model_providers".to_string())
                 .or_insert_with(|| toml::Value::Table(toml::Table::new()));
-            if let Some(providers_table) = providers_value.as_table_mut() {
-                let models_value = providers_table
-                    .entry("models".to_string())
+            if let Some(models_table) = model_providers_value.as_table_mut() {
+                let provider_value = models_table
+                    .entry(provider_type.clone())
                     .or_insert_with(|| toml::Value::Table(toml::Table::new()));
-                if let Some(models_table) = models_value.as_table_mut() {
-                    let provider_value = models_table
-                        .entry(provider_type.clone())
-                        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
-                    if let Some(provider_table) = provider_value.as_table_mut() {
-                        provider_table.insert(provider_alias.clone(), toml::Value::Table(entry));
-                    }
+                if let Some(provider_table) = provider_value.as_table_mut() {
+                    provider_table.insert(provider_alias.clone(), toml::Value::Table(entry));
                 }
             }
             agent_table.insert(
@@ -1233,7 +1256,7 @@ fn synthesize_agent_brains(
             );
             tracing::info!(
                 target: "migration",
-                "agents.{alias}: inline brain → providers.models.{provider_type}.{provider_alias}"
+                "agents.{alias}: inline brain → model_providers.{provider_type}.{provider_alias}"
             );
         } else if let Some(other) = provider {
             agent_table.insert("provider".to_string(), other);
@@ -1432,11 +1455,10 @@ fn ensure_profile_entry(passthrough: &mut toml::Table, section: &str, alias: &st
 /// `passthrough` is read (not mutated) — the synthesized agent is returned so
 /// the caller decides whether to install it under `agents`.
 fn synthesize_default_agent_if_needed(passthrough: &toml::Table) -> toml::Table {
-    let providers = match passthrough.get("providers").and_then(toml::Value::as_table) {
-        Some(t) => t,
-        None => return toml::Table::new(),
-    };
-    let models = match providers.get("models").and_then(toml::Value::as_table) {
+    let models = match passthrough
+        .get("model_providers")
+        .and_then(toml::Value::as_table)
+    {
         Some(t) => t,
         None => return toml::Table::new(),
     };
@@ -1474,7 +1496,7 @@ fn synthesize_default_agent_if_needed(passthrough: &toml::Table) -> toml::Table 
 /// option fields.
 const V3_TTS_TYPES: &[&str] = &["openai", "elevenlabs", "google", "edge", "piper"];
 
-/// **T8**: V2 `[tts.<type>]` sub-blocks → V3 `[providers.tts.<type>.default]`.
+/// **T8**: V2 `[tts.<type>]` sub-blocks → V3 `[tts_providers.<type>.default]`.
 ///
 /// V2 `TtsConfig` had per-provider `Option<*TtsConfig>` fields (`openai`,
 /// `elevenlabs`, `google`, `edge`, `piper`); V3 unifies them under a single
@@ -1526,18 +1548,18 @@ fn fold_v2_tts_into_providers(passthrough: &mut toml::Table, new_providers: &mut
         new_providers.insert("tts".to_string(), toml::Value::Table(tts_aliased));
         tracing::info!(
             target: "migration",
-            "[tts.<type>] sub-blocks promoted to [providers.tts.<type>.default]"
+            "[tts.<type>] sub-blocks promoted to [tts_providers.<type>.default]"
         );
     }
 }
 
 /// Fold V2 `[transcription]` flat block + per-family sub-blocks into V3's
-/// typed `[providers.transcription.<family>.<alias>]` shape. The Groq
+/// typed `[transcription_providers.<family>.<alias>]` shape. The Groq
 /// fields lived directly on `[transcription]` in V2 (api_key, api_url,
 /// model, language, initial_prompt) — they migrate to
-/// `[providers.transcription.groq.default]`. Per-family sub-blocks
+/// `[transcription_providers.groq.default]`. Per-family sub-blocks
 /// (`[transcription.openai]`, etc.) migrate to
-/// `[providers.transcription.<family>.default]`.
+/// `[transcription_providers.<family>.default]`.
 ///
 /// Behavior fields (`enabled`, `transcribe_non_ptt_audio`,
 /// `max_duration_secs`) stay on `[transcription]`. Legacy default-provider
@@ -1554,7 +1576,7 @@ fn fold_v2_transcription_into_providers(
 
     let mut transcription_aliased = toml::Table::new();
 
-    // Per-family sub-blocks: move to providers.transcription.<family>.default.
+    // Per-family sub-blocks: move to transcription_providers.<family>.default.
     const V3_TRANSCRIPTION_FAMILIES: &[&str] = &[
         "openai",
         "deepgram",
@@ -1571,7 +1593,7 @@ fn fold_v2_transcription_into_providers(
     }
 
     // Groq lived directly on [transcription] in V2. Extract its fields into
-    // [providers.transcription.groq.default] so V3 can find it via the typed
+    // [transcription_providers.groq.default] so V3 can find it via the typed
     // family slot. Pulled fields: api_key, api_url, model, language,
     // initial_prompt. Behavior fields (enabled, transcribe_non_ptt_audio,
     // max_duration_secs) stay on [transcription].
@@ -1587,7 +1609,7 @@ fn fold_v2_transcription_into_providers(
         transcription_aliased.insert("groq".to_string(), toml::Value::Table(wrapped));
         tracing::info!(
             target: "migration",
-            "[transcription] Groq fields promoted to [providers.transcription.groq.default]"
+            "[transcription] Groq fields promoted to [transcription_providers.groq.default]"
         );
     }
 
@@ -1620,7 +1642,7 @@ fn fold_v2_transcription_into_providers(
         }
         tracing::info!(
             target: "migration",
-            "[transcription.<family>] sub-blocks promoted to [providers.transcription.<family>.default]"
+            "[transcription.<family>] sub-blocks promoted to [transcription_providers.<family>.default]"
         );
     }
 }

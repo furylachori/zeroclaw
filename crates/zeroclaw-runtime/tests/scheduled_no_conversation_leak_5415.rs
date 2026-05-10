@@ -30,7 +30,7 @@ use std::sync::Arc;
 use axum::{Router, extract::State, routing::post};
 use tempfile::TempDir;
 use tokio::sync::Mutex as AsyncMutex;
-use zeroclaw_config::providers::ProvidersConfig;
+use zeroclaw_config::providers::ModelProviders;
 use zeroclaw_config::schema::{AliasedAgentConfig, Config, RiskProfileConfig};
 use zeroclaw_memory::{Memory, MemoryCategory, SqliteMemory};
 
@@ -103,15 +103,14 @@ async fn scheduled_run_does_not_leak_conversation_memory_into_provider_request()
     }
 
     // ── Config pointing the agent at the mock provider ─────────────
-    // V3 typed-family layout: `[providers.models.<type>.<alias>]`. The
+    // V3 typed-family layout: `[model_providers.<type>.<alias>]`. The
     // agent's `model_provider` references that path as `<type>.<alias>`.
     // The test's `default` agent points at `custom.default` so `agent::run`
     // resolves the mock provider through the same codepath production
     // daemons use.
-    let mut providers = ProvidersConfig::default();
+    let mut model_providers = ModelProviders::default();
     {
-        let base = providers
-            .models
+        let base = model_providers
             .ensure(provider_type, "default")
             .expect("`custom` slot must exist on ModelProviders");
         base.api_key = Some("test-key".to_string());
@@ -136,7 +135,7 @@ async fn scheduled_run_does_not_leak_conversation_memory_into_provider_request()
     let mut config = Config {
         workspace_dir: workspace_dir.clone(),
         config_path: tmp.path().join("config.toml"),
-        providers,
+        model_providers,
         agents,
         risk_profiles,
         ..Config::default()

@@ -76,15 +76,14 @@ fn detect_version_table() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// V1 globals → V2 [providers] → V3 providers.models.<type>.default
+// V1 globals → V2 [providers] → V3 model_providers.<type>.default
 // ─────────────────────────────────────────────────────────────
 
 #[test]
 fn v1_default_provider_target_holds_globals() {
     let cfg = v3_config();
     let entry = cfg
-        .providers
-        .models
+        .model_providers
         .find("openai", "default")
         .expect("openai.default entry synthesized from V1 default_provider");
     assert_eq!(entry.api_key.as_deref(), Some("sk-v1-test-global"));
@@ -114,15 +113,13 @@ model = "claude-sonnet-4-5"
 "#,
     );
     let anth = v3
-        .get("providers")
-        .and_then(toml::Value::as_table)
-        .and_then(|p| p.get("models"))
+        .get("model_providers")
         .and_then(toml::Value::as_table)
         .and_then(|m| m.get("anthropic"))
         .and_then(toml::Value::as_table)
         .and_then(|a| a.get("default"))
         .and_then(toml::Value::as_table)
-        .expect("providers.models.anthropic.default present after V2→V3");
+        .expect("model_providers.anthropic.default present after V2→V3");
     assert_eq!(
         anth.get("api_key").and_then(toml::Value::as_str),
         Some("sk-ant-v2-test")
@@ -141,24 +138,22 @@ fn claude_code_folded_under_anthropic() {
 api_key = "sk-cc-v2-test"
 "#,
     );
-    let providers_models = v3
-        .get("providers")
+    let model_providers = v3
+        .get("model_providers")
         .and_then(toml::Value::as_table)
-        .and_then(|p| p.get("models"))
-        .and_then(toml::Value::as_table)
-        .expect("providers.models present after V2→V3");
-    let cc = providers_models
+        .expect("model_providers present after V2→V3");
+    let cc = model_providers
         .get("anthropic")
         .and_then(toml::Value::as_table)
         .and_then(|a| a.get("claude-code"))
         .and_then(toml::Value::as_table)
-        .expect("claude-code folded under providers.models.anthropic.claude-code");
+        .expect("claude-code folded under model_providers.anthropic.claude-code");
     assert_eq!(
         cc.get("api_key").and_then(toml::Value::as_str),
         Some("sk-cc-v2-test")
     );
     assert!(
-        !providers_models.contains_key("claude-code"),
+        !model_providers.contains_key("claude-code"),
         "standalone claude-code provider must not appear in V3"
     );
 }
@@ -167,8 +162,8 @@ api_key = "sk-cc-v2-test"
 fn v1_model_routes_preserved_at_providers_level() {
     let cfg = v3_config();
     assert!(
-        !cfg.providers.model_routes.is_empty(),
-        "model_routes survive into providers.model_routes"
+        !cfg.model_routes.is_empty(),
+        "model_routes survive into model_routes"
     );
 }
 
@@ -350,7 +345,7 @@ fn discord_history_folded_with_archive_flag() {
 #[test]
 fn t8_tts_subsystem_promoted_to_providers() {
     let value = v3_value();
-    // [tts.openai] should be GONE from [tts] (moved to providers.tts.openai.default)
+    // [tts.openai] should be GONE from [tts] (moved to tts_providers.openai.default)
     let tts_table = value
         .get("tts")
         .and_then(toml::Value::as_table)
@@ -360,11 +355,9 @@ fn t8_tts_subsystem_promoted_to_providers() {
         "V2 [tts.openai] sub-block must be moved out of [tts]"
     );
 
-    // And it should appear at providers.tts.openai.default with the api_key.
+    // And it should appear at tts_providers.openai.default with the api_key.
     let api_key = value
-        .get("providers")
-        .and_then(toml::Value::as_table)
-        .and_then(|t| t.get("tts"))
+        .get("tts_providers")
         .and_then(toml::Value::as_table)
         .and_then(|t| t.get("openai"))
         .and_then(toml::Value::as_table)
@@ -375,20 +368,18 @@ fn t8_tts_subsystem_promoted_to_providers() {
     assert_eq!(
         api_key,
         Some("sk-tts-openai"),
-        "V2 [tts.openai].api_key did not land at providers.tts.openai.default.api_key"
+        "V2 [tts.openai].api_key did not land at tts_providers.openai.default.api_key"
     );
 
     // ElevenLabs V2 `model_id` must be renamed to V3 `model`.
     let eleven_default = value
-        .get("providers")
-        .and_then(toml::Value::as_table)
-        .and_then(|t| t.get("tts"))
+        .get("tts_providers")
         .and_then(toml::Value::as_table)
         .and_then(|t| t.get("elevenlabs"))
         .and_then(toml::Value::as_table)
         .and_then(|t| t.get("default"))
         .and_then(toml::Value::as_table)
-        .expect("providers.tts.elevenlabs.default present");
+        .expect("tts_providers.elevenlabs.default present");
     assert_eq!(
         eleven_default.get("model").and_then(toml::Value::as_str),
         Some("eleven_monolingual_v1"),
@@ -752,8 +743,7 @@ fn agent_synthesized_into_runtime_profiles_default() {
 fn cost_prices_dropped_not_folded() {
     let cfg = v3_config();
     let anth = cfg
-        .providers
-        .models
+        .model_providers
         .find("anthropic", "default")
         .expect("anthropic.default exists");
     assert!(
@@ -1006,7 +996,7 @@ channel_ids = ["aaaa"]
 #[test]
 fn anthropic_custom_colon_url_default_provider_folds_under_anthropic() {
     // Phase 8 migration sweep: V2 `anthropic-custom:URL` form folds under
-    // providers.models.anthropic.custom with the URL split out onto the
+    // model_providers.anthropic.custom with the URL split out onto the
     // alias entry's `uri` field.
     let raw = r#"
 default_provider = "anthropic-custom:https://api.z.ai/api/anthropic"
@@ -1015,10 +1005,10 @@ api_key = "sk-zai-test"
 "#;
     let cfg =
         migrate_to_current(raw).expect("migration succeeds despite colon-URL default_provider");
-    let entry =
-        cfg.providers.models.find("anthropic", "custom").expect(
-            "V2 anthropic-custom synonym must fold under providers.models.anthropic.custom",
-        );
+    let entry = cfg
+        .model_providers
+        .find("anthropic", "custom")
+        .expect("V2 anthropic-custom synonym must fold under model_providers.anthropic.custom");
     assert_eq!(
         entry.uri.as_deref(),
         Some("https://api.z.ai/api/anthropic"),
@@ -1037,8 +1027,7 @@ default_model = "local-model"
     let cfg =
         migrate_to_current(raw).expect("migration succeeds for plain `custom:` colon-URL form");
     let entry = cfg
-        .providers
-        .models
+        .model_providers
         .find("custom", "default")
         .expect("V3 outer key must be `custom`, not the raw colon-URL");
     assert_eq!(
@@ -1084,11 +1073,10 @@ api_key = "sk-zai-agent"
     );
 
     let synthesized = v3
-        .get("providers")
-        .and_then(|v| v.get("models"))
+        .get("model_providers")
         .and_then(|v| v.get("anthropic-custom"))
         .and_then(|v| v.get("agent_researcher"))
-        .expect("providers.models.anthropic-custom.agent_researcher synthesized");
+        .expect("model_providers.anthropic-custom.agent_researcher synthesized");
     assert_eq!(
         synthesized.get("uri").and_then(toml::Value::as_str),
         Some("https://api.z.ai/api/anthropic"),
@@ -1153,12 +1141,12 @@ schema_version = 2
 default_provider = "openai"
 default_model = "gpt-4o"
 
-[[providers.model_routes]]
+[[model_routes]]
 hint = "vision"
 provider = "openai"
 model = "gpt-4-vision"
 
-[[providers.model_routes]]
+[[model_routes]]
 hint = "fast"
 provider = "groq"
 model = "llama-3.1-8b-instant"
@@ -1168,7 +1156,6 @@ model_provider = "openai.default"
 "#;
     let cfg = migrate_to_current(raw).expect("V2 model_routes migrate");
     let vision = cfg
-        .providers
         .model_routes
         .iter()
         .find(|r| r.hint == "vision")
@@ -1177,7 +1164,6 @@ model_provider = "openai.default"
     assert_eq!(vision.model, "gpt-4-vision");
 
     let fast = cfg
-        .providers
         .model_routes
         .iter()
         .find(|r| r.hint == "fast")
@@ -1195,7 +1181,7 @@ schema_version = 2
 default_provider = "openai"
 default_model = "gpt-4o"
 
-[[providers.embedding_routes]]
+[[embedding_routes]]
 hint = "semantic"
 provider = "openai"
 model = "text-embedding-3-small"
@@ -1206,7 +1192,6 @@ model_provider = "openai.default"
 "#;
     let cfg = migrate_to_current(raw).expect("V2 embedding_routes migrate");
     let semantic = cfg
-        .providers
         .embedding_routes
         .iter()
         .find(|r| r.hint == "semantic")
@@ -1228,7 +1213,7 @@ schema_version = 2
 default_provider = "openai"
 default_model = "gpt-4o"
 
-[[providers.model_routes]]
+[[model_routes]]
 hint = "vision"
 model_provider = "openai"
 model = "gpt-4-vision"
@@ -1238,7 +1223,6 @@ model_provider = "openai.default"
 "#;
     let cfg = migrate_to_current(raw).expect("idempotent V3-shaped routes migrate");
     let vision = cfg
-        .providers
         .model_routes
         .iter()
         .find(|r| r.hint == "vision")

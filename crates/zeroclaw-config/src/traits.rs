@@ -127,7 +127,7 @@ impl HasPropKind
 pub struct PropFieldInfo {
     /// Full dotted name (e.g. `channels.telegram.draft-update-interval-ms`).
     /// Owned so the `HashMap<String, T>` branch of the derive can inject the
-    /// runtime map key into the path (`providers.models.anthropic.api-key`)
+    /// runtime map key into the path (`model_providers.anthropic.api-key`)
     /// — `&'static str` can't carry user-supplied keys.
     pub name: String,
     /// Category for grouping in property listings

@@ -23,7 +23,7 @@ use super::api::require_auth;
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 pub struct CatalogModelProvider {
-    /// Canonical model_provider name as used in `[providers.models.<name>]`.
+    /// Canonical model_provider name as used in `[model_providers.<name>]`.
     pub name: String,
     /// Human-readable display name.
     pub display_name: String,
@@ -191,7 +191,7 @@ pub async fn handle_onboard_status(State(state): State<AppState>, headers: Heade
     let cfg = state.config.lock().clone();
 
     let has_completed = !cfg.onboard_state.completed_sections.is_empty();
-    let has_model_provider = !cfg.providers.models.is_empty();
+    let has_model_provider = !cfg.model_providers.is_empty();
 
     let (needs_onboarding, reason) = if has_completed {
         (false, "has_completed_sections")
@@ -338,7 +338,8 @@ const HIDDEN_TOP_LEVEL: &[&str] = &["schema-version", "onboard-state"];
 /// Sections whose picker semantics are non-generic and live in the
 /// per-section dispatch in `handle_section_picker` (catalog of model_providers,
 /// memory backend list, tunnel-with-none, channel sub-table walk).
-const SECTIONS_WITH_PICKER: &[&str] = &["providers", "channels", "memory", "tunnel", "agents"];
+const SECTIONS_WITH_PICKER: &[&str] =
+    &["model_providers", "channels", "memory", "tunnel", "agents"];
 
 /// Humanize a section key for display (`google_workspace` → `Google workspace`).
 /// Keeps things simple and predictable; specific wording overrides go in
@@ -363,7 +364,9 @@ fn section_group(key: &str) -> &'static str {
         // The 5 foundation sections (TUI's `Section` enum) — every install
         // touches these. Named for the role they play, not for the wizard
         // that happens to walk them on first run.
-        "providers" | "channels" | "memory" | "hardware" | "tunnel" | "agents" => "Foundation",
+        "model_providers" | "channels" | "memory" | "hardware" | "tunnel" | "agents" => {
+            "Foundation"
+        }
         // Agent loop, scheduling, and orchestration.
         "agent"
         | "autonomy"
@@ -405,7 +408,7 @@ fn section_group(key: &str) -> &'static str {
 /// someone writes copy).
 fn section_help(key: &str) -> &'static str {
     match key {
-        "providers" => {
+        "model_providers" => {
             "Paste an API key (e.g. `sk-ant-...` for Anthropic, `sk-...` for OpenAI) when prompted. \
                         For OAuth-based model_providers run: zeroclaw auth login --model-provider <name>"
         }
@@ -485,9 +488,9 @@ pub async fn handle_section_picker(
     let cfg = state.config.lock().clone();
 
     let (items, help) = match section.as_str() {
-        "providers" => (
+        "model_providers" => (
             providers_picker(&cfg),
-            section_help("providers").to_string(),
+            section_help("model_providers").to_string(),
         ),
         "memory" => (memory_picker(&cfg), section_help("memory").to_string()),
         "channels" => (
@@ -526,7 +529,7 @@ fn providers_picker(cfg: &zeroclaw_config::schema::Config) -> Vec<PickerItem> {
     zeroclaw_providers::list_model_providers()
         .into_iter()
         .map(|p| {
-            let configured = cfg.providers.models.contains_model_provider_type(p.name);
+            let configured = cfg.model_providers.contains_model_provider_type(p.name);
             PickerItem {
                 key: p.name.to_string(),
                 label: p.display_name.to_string(),
@@ -667,7 +670,7 @@ fn schema_walk_picker_with_none(
 pub struct SelectItemResponse {
     /// The dotted prefix the frontend should use for `GET /api/config/list?prefix=...`
     /// to render the form for the selected item. E.g. picking `anthropic`
-    /// under Providers returns `providers.models.anthropic`.
+    /// under Providers returns `model_providers.anthropic`.
     pub fields_prefix: String,
     /// True if this select created a new entry (vs. resolved to an existing one).
     pub created: bool,
@@ -686,7 +689,7 @@ pub struct SectionItemPath {
 ///
 /// Per-section dispatch:
 /// * `providers` → POST equivalent of `/api/config/map-key?path=providers.models&key=<key>`,
-///   then return `providers.models.<key>`.
+///   then return `model_providers.<key>`.
 /// * `channels` → init_defaults under `channels.<key>`, return `channels.<key>`.
 /// * `memory` → set_prop `memory.backend = <key>`, return `memory`.
 /// * `tunnel` → set_prop `tunnel.model_provider = <key>` (and init_defaults the
@@ -694,7 +697,7 @@ pub struct SectionItemPath {
 ///   for the `none` case).
 ///
 /// The optional JSON body `{"alias": "<name>"}` names the entry being created,
-/// e.g. `"work"` for `providers.models.anthropic.work`. Omit to use `"default"`.
+/// e.g. `"work"` for `model_providers.anthropic.work`. Omit to use `"default"`.
 #[derive(Debug, Default, Deserialize)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 pub struct SectionSelectBody {
@@ -720,7 +723,7 @@ pub async fn handle_section_select(
     let mut working = state.config.lock().clone();
 
     let (fields_prefix, created) = match section.as_str() {
-        "providers" => {
+        "model_providers" => {
             // Arm 1: create the outer type bucket if it doesn't exist yet.
             if let Err(msg) = working.create_map_key("providers.models", &key) {
                 return error_response(
@@ -733,7 +736,7 @@ pub async fn handle_section_select(
             }
             // Arm 2: create the named alias entry inside the type bucket.
             let created = working
-                .create_map_key(&format!("providers.models.{key}"), &alias)
+                .create_map_key(&format!("model_providers.{key}"), &alias)
                 .map_err(|msg| {
                     error_response(
                         ConfigApiError::new(
@@ -742,7 +745,7 @@ pub async fn handle_section_select(
                                 "could not select model_provider `{key}` alias `{alias}`: {msg}"
                             ),
                         )
-                        .with_path(format!("providers.models.{key}")),
+                        .with_path(format!("model_providers.{key}")),
                     )
                 });
             let created = match created {
@@ -754,7 +757,7 @@ pub async fn handle_section_select(
             // (#6273). The pre-Phase-6 trait-defaults pre-population walk is
             // gone — operators get the typed config's `Default::default()`
             // shape and override individual fields through the form.
-            (format!("providers.models.{key}.{alias}"), created)
+            (format!("model_providers.{key}.{alias}"), created)
         }
         "channels" => {
             let created = working
@@ -873,11 +876,25 @@ mod tests {
             .iter()
             .filter_map(|f| f.name.split('.').next().map(str::to_string))
             .collect();
+        // Mirror handle_sections: map-keyed sections surface even when
+        // their HashMap is empty (prop_fields only emits paths for
+        // populated entries).
+        for s in zeroclaw_config::schema::Config::map_key_sections() {
+            if let Some(first) = s.path.split('.').next() {
+                roots.insert(first.to_string());
+            }
+        }
         for hidden in HIDDEN_TOP_LEVEL {
             roots.remove(*hidden);
         }
         // The 5 onboarding sections must still be in the derived set.
-        for required in ["providers", "channels", "memory", "hardware", "tunnel"] {
+        for required in [
+            "model_providers",
+            "channels",
+            "memory",
+            "hardware",
+            "tunnel",
+        ] {
             assert!(
                 roots.contains(required),
                 "derived sections must include onboarding section `{required}`; got {roots:?}",
@@ -971,11 +988,11 @@ mod tests {
     #[test]
     fn providers_picker_marks_configured_after_create_map_key() {
         // Typed-family layout: each canonical family is a map-keyed
-        // sub-section at `providers.models.<family>` whose entries are
+        // sub-section at `model_providers.<family>` whose entries are
         // operator-named aliases. Adding an alias on any family flips the
         // picker badge to "configured" for that family.
         let mut cfg = empty_cfg();
-        cfg.create_map_key("providers.models.anthropic", "default")
+        cfg.create_map_key("model_providers.anthropic", "default")
             .expect("create_map_key");
         let items = providers_picker(&cfg);
         let anthropic = items.iter().find(|i| i.key == "anthropic").unwrap();

@@ -90,7 +90,7 @@ pub struct WhatsAppWebChannel {
     transcription: Option<zeroclaw_config::schema::TranscriptionConfig>,
     transcription_manager: Option<std::sync::Arc<super::transcription::TranscriptionManager>>,
     /// Text-to-speech runtime for voice replies (built from
-    /// `providers.tts.<type>.<alias>`).
+    /// `tts_providers.<type>.<alias>`).
     tts_manager: Option<Arc<super::tts::TtsManager>>,
     /// Chats awaiting a voice reply — maps chat JID to the latest substantive
     /// reply text. A background task debounces and sends the voice note after
@@ -199,7 +199,7 @@ impl WhatsAppWebChannel {
     /// Configure text-to-speech for outgoing voice replies.
     ///
     /// Builds a [`super::tts::TtsManager`] from the
-    /// `[providers.tts.<type>.<alias>]` map. Disabled when `[tts].enabled = false`
+    /// `[tts_providers.<type>.<alias>]` map. Disabled when `[tts].enabled = false`
     /// or when the manager fails to construct (logged at warn).
     #[cfg(feature = "whatsapp-web")]
     pub fn with_tts(mut self, config: &zeroclaw_config::schema::Config) -> Self {

@@ -51,7 +51,7 @@ const MAX_API_ERROR_CHARS: usize = 500;
 const MINIMAX_INTL_BASE_URL: &str = "https://api.minimax.io/v1";
 /// MiniMax-published OAuth client_id (same one their portal uses).
 /// Operators with a custom OAuth app override via
-/// `[providers.models.minimax.<alias>] oauth_client_id = "..."`.
+/// `[model_providers.minimax.<alias>] oauth_client_id = "..."`.
 const MINIMAX_OAUTH_DEFAULT_CLIENT_ID: &str = "78257093-7e40-4613-99e0-527b14b39113";
 const GLM_GLOBAL_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
 const MOONSHOT_INTL_BASE_URL: &str = "https://api.moonshot.ai/v1";
@@ -620,8 +620,7 @@ pub fn model_provider_runtime_options_from_model_provider_entry(
         .filter(|u| !u.is_empty())
         .and_then(|active_uri| {
             config
-                .providers
-                .models
+                .model_providers
                 .iter_entries()
                 .map(|(_, _, base)| base)
                 .find(|p| {
@@ -669,7 +668,7 @@ pub fn provider_runtime_options_for_agent(
             agent = agent_alias,
             "model_provider_for_agent returned None; falling back to model_providers.first_model_provider()"
         );
-        config.providers.first_model_provider()
+        config.first_model_provider()
     });
     let mut options = model_provider_runtime_options_from_model_provider_entry(config, entry);
 
@@ -681,14 +680,14 @@ pub fn provider_runtime_options_for_agent(
         // `for_each_model_provider_slot!`). Operator-set `base.uri` already
         // populated above wins over the family default.
         if options.provider_api_url.is_none()
-            && let Some(uri) = config.providers.models.resolved_endpoint_uri(family, alias)
+            && let Some(uri) = config.model_providers.resolved_endpoint_uri(family, alias)
         {
             options.provider_api_url = Some(uri.to_string());
         }
         // Family-specific typed extras (Azure resource, kilocli/gemini_cli
         // binary_path, Gemini OAuth client credentials, OpenAI Codex
         // auth-routing, etc.) are read directly by the factory branches
-        // from `config.providers.models.<family>.<alias>` — no flat
+        // from `config.model_providers.<family>.<alias>` — no flat
         // dumping ground here.
     }
 
@@ -698,10 +697,7 @@ pub fn provider_runtime_options_for_agent(
 pub fn provider_runtime_options_from_config(
     config: &zeroclaw_config::schema::Config,
 ) -> ModelProviderRuntimeOptions {
-    model_provider_runtime_options_from_model_provider_entry(
-        config,
-        config.providers.first_model_provider(),
-    )
+    model_provider_runtime_options_from_model_provider_entry(config, config.first_model_provider())
 }
 
 fn is_secret_char(c: char) -> bool {
@@ -845,8 +841,8 @@ fn check_api_key_prefix(model_provider_name: &str, key: &str) -> Option<&'static
 // `parse_custom_provider_url` was deleted in #6273. The legacy colon-URL form
 // (`custom:https://...` and `anthropic-custom:https://...`) is collapsed
 // at TOML load time by `normalize_model_provider_type` in `schema/v2.rs` into
-// `[providers.models.custom.<alias>] uri = "..."` (or
-// `[providers.models.anthropic.custom] uri = "..."`). The factory's
+// `[model_providers.custom.<alias>] uri = "..."` (or
+// `[model_providers.anthropic.custom] uri = "..."`). The factory's
 // `"custom"` arm reads `uri` from the alias entry via
 // `options.provider_api_url`; URL parsing/validation now happens at
 // schema validation time, not at runtime construction.
@@ -904,7 +900,7 @@ pub fn create_model_provider_with_url(
 /// Factory: create model_provider with full alias context.
 ///
 /// `(config, family, alias)` lets each family branch read its own typed
-/// alias config (`config.providers.models.<family>.get(alias)`) directly
+/// alias config (`config.model_providers.<family>.get(alias)`) directly
 /// — no flat per-family extras dumping ground. Production callers with
 /// agent context (delegate, llm_task, model routing, gateway) use this.
 pub fn create_model_provider_for_alias(
@@ -1022,7 +1018,7 @@ pub fn canonicalize_v2_model_provider_name(name: &str) -> &str {
 
 /// Split a V2 colon-URL family name (`custom:https://...`,
 /// `anthropic-custom:https://...`) into a `(name, url)` pair. The V3 typed
-/// schema stores custom endpoints as `[providers.models.<family>.<alias>]
+/// schema stores custom endpoints as `[model_providers.<family>.<alias>]
 /// uri = "..."`; this helper preserves runtime-factory compatibility for
 /// callers that still pass the legacy single-token form.
 fn split_v2_colon_url(name: &str) -> (&str, Option<&str>) {
@@ -1059,7 +1055,7 @@ fn create_model_provider_inner(
         {
             anyhow::bail!(
                 "Custom model_provider `{prefix}:<url>` requires a URL beginning with http:// or https://. \
-                 Set `[providers.models.custom.<alias>] uri = \"https://your-api.com\"` or pass a valid URL."
+                 Set `[model_providers.custom.<alias>] uri = \"https://your-api.com\"` or pass a valid URL."
             );
         }
     }
@@ -1803,7 +1799,7 @@ mod tests {
     #[test]
     fn factory_openai_codex() {
         // Codex is now selected by the typed `base.requires_openai_auth`
-        // flag on an `[providers.models.openai.codex]` alias entry — the
+        // flag on an `[model_providers.openai.codex]` alias entry — the
         // factory's legacy escape hatch for the bare "openai-codex" /
         // "openai_codex" / "codex" family names still routes through
         // `OpenAiCodexModelProvider::new` when a real Config + alias is
@@ -2044,7 +2040,7 @@ mod tests {
 
     #[test]
     fn factory_groq_honors_native_tools_override_true() {
-        // Operator opt-in via `[providers.models.groq.<alias>] native_tools = true`
+        // Operator opt-in via `[model_providers.groq.<alias>] native_tools = true`
         // skips the default disable so non-llama Groq models can use native
         // tool calling.
         let options = ModelProviderRuntimeOptions {
@@ -2085,7 +2081,7 @@ mod tests {
         // `first_model_provider()`.
         use zeroclaw_config::schema::{GroqModelProviderConfig, ModelProviderConfig};
         let mut config = zeroclaw_config::schema::Config::default();
-        config.providers.models.groq.insert(
+        config.model_providers.groq.insert(
             "default".to_string(),
             GroqModelProviderConfig {
                 base: ModelProviderConfig {
@@ -2193,8 +2189,8 @@ mod tests {
     //
     // The legacy colon-URL form ("custom:https://..." / "anthropic-custom:...")
     // and its in-process URL parser were deleted in #6273. The surface is
-    // `[providers.models.custom.<alias>] uri = "https://..."` for OpenAI-
-    // compatible endpoints (or `[providers.models.anthropic.<alias>] uri = ...`
+    // `[model_providers.custom.<alias>] uri = "https://..."` for OpenAI-
+    // compatible endpoints (or `[model_providers.anthropic.<alias>] uri = ...`
     // for Anthropic-compatible). URL validation now happens at schema-load
     // time in `crates/zeroclaw-config/src/schema.rs::validate`, not at runtime
     // construction; tests for that validation belong with the schema, not here.
@@ -2584,13 +2580,11 @@ mod tests {
             },
         };
         config
-            .providers
-            .models
+            .model_providers
             .anthropic
             .insert("default".to_string(), default_alias);
         config
-            .providers
-            .models
+            .model_providers
             .anthropic
             .insert("work".to_string(), work_alias);
         let work_agent = AliasedAgentConfig {

@@ -591,7 +591,7 @@ mod tests {
         // tool's add_shell_job_with_approval routes through validation
         // that resolves SecurityPolicy::for_agent("test-agent"). Seed
         // a configured agent that points at the supplied risk profile.
-        config.providers.models.openrouter.insert(
+        config.model_providers.openrouter.insert(
             "default".to_string(),
             zeroclaw_config::schema::OpenRouterModelProviderConfig::default(),
         );
@@ -766,7 +766,7 @@ mod tests {
             ..Config::default()
         };
         config.scheduler.enabled = false;
-        config.providers.models.openrouter.insert(
+        config.model_providers.openrouter.insert(
             "default".to_string(),
             zeroclaw_config::schema::OpenRouterModelProviderConfig::default(),
         );
@@ -825,7 +825,7 @@ mod tests {
             .entry("default".into())
             .or_default()
             .allowed_commands = vec!["echo".into()];
-        config.providers.models.openrouter.insert(
+        config.model_providers.openrouter.insert(
             "default".to_string(),
             zeroclaw_config::schema::OpenRouterModelProviderConfig::default(),
         );
@@ -884,7 +884,7 @@ mod tests {
             .entry("default".into())
             .or_default()
             .allowed_commands = vec!["touch".into()];
-        config.providers.models.openrouter.insert(
+        config.model_providers.openrouter.insert(
             "default".to_string(),
             zeroclaw_config::schema::OpenRouterModelProviderConfig::default(),
         );

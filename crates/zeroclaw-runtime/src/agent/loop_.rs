@@ -2216,7 +2216,7 @@ pub async fn run(
         None => Arc::new(SecurityPolicy::for_agent(&config, agent_alias)?),
     };
 
-    let primary_model_provider = config.providers.first_model_provider();
+    let primary_model_provider = config.first_model_provider();
 
     // ── Memory (the brain) ────────────────────────────────────────
     // Per-agent memory: the inner backend is the install-wide store
@@ -2382,7 +2382,7 @@ pub async fn run(
     // ── Resolve model_provider ─────────────────────────────────────────
     let mut provider_name = provider_override
         .as_deref()
-        .or(config.providers.first_model_provider_type())
+        .or(config.first_model_provider_type())
         .unwrap_or("openrouter")
         .to_string();
 
@@ -2401,7 +2401,7 @@ pub async fn run(
             primary_model_provider.and_then(|e| e.api_key.as_deref()),
             primary_model_provider.and_then(|e| e.uri.as_deref()),
             &config.reliability,
-            &config.providers.model_routes,
+            &config.model_routes,
             &model_name,
             &provider_runtime_options,
         )?;
@@ -2619,8 +2619,7 @@ pub async fn run(
         crate::cost::CostTracker::get_or_init_global(config.cost.clone(), &config.workspace_dir)
             .map(|tracker| {
                 let pricing: crate::agent::cost::ModelProviderPricing = config
-                    .providers
-                    .models
+                    .model_providers
                     .iter_entries()
                     .map(|(type_k, alias_k, profile)| {
                         (format!("{type_k}.{alias_k}"), profile.pricing.clone())
@@ -2778,7 +2777,7 @@ pub async fn run(
                                 primary_model_provider.and_then(|e| e.api_key.as_deref()),
                                 primary_model_provider.and_then(|e| e.uri.as_deref()),
                                 &config.reliability,
-                                &config.providers.model_routes,
+                                &config.model_routes,
                                 &new_model,
                                 &provider_runtime_options,
                             )?;
@@ -3096,7 +3095,7 @@ pub async fn run(
                                     primary_model_provider.and_then(|e| e.api_key.as_deref()),
                                     primary_model_provider.and_then(|e| e.uri.as_deref()),
                                     &config.reliability,
-                                    &config.providers.model_routes,
+                                    &config.model_routes,
                                     &new_model,
                                     &provider_runtime_options,
                                 )?;
@@ -3265,7 +3264,7 @@ pub async fn process_message(
     let runtime: Arc<dyn platform::RuntimeAdapter> =
         Arc::from(platform::create_runtime(&config.runtime)?);
     let security = Arc::new(SecurityPolicy::for_agent(&config, agent_alias)?);
-    let primary_model_provider = config.providers.first_model_provider();
+    let primary_model_provider = config.first_model_provider();
     let approval_manager = ApprovalManager::for_non_interactive(&risk_profile);
     let mem: Arc<dyn Memory> = zeroclaw_memory::create_memory_for_agent(
         &config,
@@ -3380,23 +3379,20 @@ pub async fn process_message(
         }
     }
 
-    let provider_name = config
-        .providers
-        .first_model_provider_type()
-        .unwrap_or("openrouter");
+    let provider_name = config.first_model_provider_type().unwrap_or("openrouter");
     let model_name = match primary_model_provider
         .and_then(|e| e.model.as_deref())
         .map(str::trim)
         .filter(|m| !m.is_empty())
     {
         Some(m) => m.to_string(),
-        None => match config.providers.resolve_default_model() {
+        None => match config.resolve_default_model() {
             Some(m) => {
                 tracing::warn!(
                     model_provider = provider_name,
                     model = %m,
                     "fallback model_provider has no `model` set; using first configured \
-                     providers.models entry as default. Set [providers.models.{provider_name}] \
+                     providers.models entry as default. Set [model_providers.{provider_name}] \
                      model = \"...\" to silence this warning.",
                 );
                 m
@@ -3404,7 +3400,7 @@ pub async fn process_message(
             None => {
                 anyhow::bail!(
                     "no model configured: providers.models is empty or has no `model` field set. \
-                     Configure at least one [providers.models.<type>.<alias>] model = \"...\" \
+                     Configure at least one [model_providers.<type>.<alias>] model = \"...\" \
                      or define a [[model_routes]] hint.",
                 )
             }
@@ -3418,7 +3414,7 @@ pub async fn process_message(
             primary_model_provider.and_then(|e| e.api_key.as_deref()),
             primary_model_provider.and_then(|e| e.uri.as_deref()),
             &config.reliability,
-            &config.providers.model_routes,
+            &config.model_routes,
             &model_name,
             &provider_runtime_options,
         )?;
@@ -3572,7 +3568,6 @@ pub async fn process_message(
     let thinking_params = crate::agent::thinking::apply_thinking_level(thinking_level);
     let effective_temperature = crate::agent::thinking::clamp_temperature(
         config
-            .providers
             .first_model_provider()
             .and_then(|e| e.temperature)
             .unwrap_or(0.7)

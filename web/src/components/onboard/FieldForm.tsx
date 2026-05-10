@@ -9,7 +9,7 @@
 //  * string-array → <textarea>, one value per line
 //  * integer/float → <input type="number">
 //  * secret     → <input type="password"> with populated indicator
-//  * provider model field (path matches `providers.models.<name>.model`) →
+//  * provider model field (path matches `model_providers.<name>.model`) →
 //    fetches /api/onboard/catalog/models?provider=<name>, populates a
 //    <datalist>; on fetch failure falls back to free-text with help text.
 //  * everything else → <input type="text">
@@ -42,7 +42,7 @@ import {
 import { fuzzyFilter } from '../../lib/fuzzy';
 
 interface FieldFormProps {
-  /** Dotted prefix to fetch fields under, e.g. `providers.models.anthropic`. */
+  /** Dotted prefix to fetch fields under, e.g. `model_providers.anthropic`. */
   prefix: string;
   /** Called after a successful save; parent typically advances or refreshes. */
   onSaved?: () => void;

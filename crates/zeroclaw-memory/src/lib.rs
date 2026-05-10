@@ -512,7 +512,7 @@ pub async fn create_memory_for_agent(
     // allowlist UUIDs.
     let inner = create_memory_with_storage_and_routes(
         &config.memory,
-        &config.providers.embedding_routes,
+        &config.embedding_routes,
         config.resolve_active_storage(),
         &config.workspace_dir,
         api_key,

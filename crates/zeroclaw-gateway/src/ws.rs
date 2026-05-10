@@ -653,7 +653,7 @@ fn resolve_session_cwd(
 fn needs_onboarding_ws_error(
     config: &zeroclaw_config::schema::Config,
 ) -> Option<serde_json::Value> {
-    let model = config.providers.resolve_default_model().unwrap_or_default();
+    let model = config.resolve_default_model().unwrap_or_default();
     crate::needs_onboarding_for(&model)?;
     Some(serde_json::json!({
         "type": "error",
@@ -684,7 +684,6 @@ async fn process_chat_message(
     let provider_label = state
         .config
         .lock()
-        .providers
         .first_model_provider_type()
         .unwrap_or("unknown")
         .to_string();
@@ -1118,14 +1117,13 @@ fn record_turn_cost(
     // V3 per-provider pricing lookup. Mirrors how the channels
     // orchestrator and the gateway lib.rs cost-tracking scope build
     // their `ModelProviderPricing`: walk every
-    // `[providers.models.<type>.<alias>]` and key the per-profile
+    // `[model_providers.<type>.<alias>]` and key the per-profile
     // pricing map by `<type>.<alias>`. The streaming and non-streaming
     // paths derive identical costs because both bottom out in the same
     // `<type>.<alias>` key shape.
     let config = state.config.lock();
     let pricing_map = config
-        .providers
-        .models
+        .model_providers
         .iter_entries()
         .filter(|(_, _, base)| !base.pricing.is_empty())
         .map(|(type_k, alias_k, base)| (format!("{type_k}.{alias_k}"), base.pricing.clone()))
@@ -1311,7 +1309,7 @@ mod tests {
     #[test]
     fn needs_onboarding_ws_error_uses_current_configured_model() {
         let mut config = zeroclaw_config::schema::Config::default();
-        config.providers.models.openai.insert(
+        config.model_providers.openai.insert(
             "default".to_string(),
             zeroclaw_config::schema::OpenAIModelProviderConfig {
                 base: zeroclaw_config::schema::ModelProviderConfig {

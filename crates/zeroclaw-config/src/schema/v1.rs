@@ -20,8 +20,8 @@
 //! | `provider_timeout_secs` | `providers.provider_timeout_secs` |
 //! | `provider_max_tokens` | `providers.provider_max_tokens` |
 //! | `extra_headers` | `providers.extra_headers` |
-//! | `model_routes` | `providers.model_routes` |
-//! | `embedding_routes` | `providers.embedding_routes` |
+//! | `model_routes` | `model_routes` |
+//! | `embedding_routes` | `embedding_routes` |
 //!
 //! Plus rename: `channels_config` → `channels`. And: `schema_version = 2`
 //! is set on output.

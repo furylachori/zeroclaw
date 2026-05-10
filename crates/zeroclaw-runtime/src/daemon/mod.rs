@@ -568,7 +568,6 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                 &config.memory,
                 &config.workspace_dir,
                 config
-                    .providers
                     .first_model_provider()
                     .and_then(|e| e.api_key.as_deref()),
             )
@@ -617,7 +616,6 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                 (None, None) => task_prompt,
             };
             let temp = config
-                .providers
                 .first_model_provider()
                 .and_then(|e| e.temperature)
                 .unwrap_or(0.7);

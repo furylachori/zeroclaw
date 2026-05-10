@@ -153,10 +153,10 @@ fn check_sqlite(workspace_dir: &Path) -> CheckResult {
 fn check_model_provider_registry() -> CheckResult {
     let model_providers = crate::providers::list_model_providers();
     if model_providers.is_empty() {
-        CheckResult::fail("providers", "no model providers registered")
+        CheckResult::fail("model_providers", "no model providers registered")
     } else {
         CheckResult::pass(
-            "providers",
+            "model_providers",
             format!("{} model providers available", model_providers.len()),
         )
     }
@@ -296,7 +296,6 @@ async fn check_memory_roundtrip(config: &crate::config::Config) -> CheckResult {
         &config.memory,
         &config.workspace_dir,
         config
-            .providers
             .first_model_provider()
             .and_then(|e| e.api_key.as_deref()),
     ) {

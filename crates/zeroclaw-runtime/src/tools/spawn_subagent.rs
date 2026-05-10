@@ -107,7 +107,6 @@ impl Tool for SpawnSubagentTool {
 
         let temperature = self
             .config
-            .providers
             .first_model_provider()
             .and_then(|e| e.temperature)
             .unwrap_or(0.7);

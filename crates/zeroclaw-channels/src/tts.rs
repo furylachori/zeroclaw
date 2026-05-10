@@ -3,7 +3,7 @@
 //! Supports OpenAI, ElevenLabs, Google Cloud TTS, Edge TTS (free, subprocess-based),
 //! and Piper TTS (local GPU-accelerated, OpenAI-compatible endpoint).
 //!
-//! per-instance configs live under `[providers.tts.<type>.<alias>]`; agents
+//! per-instance configs live under `[tts_providers.<type>.<alias>]`; agents
 //! pick which instance to use via the `tts_provider` dotted alias reference.
 //! Global runtime knobs (default_voice, max_text_length, etc.) live on `[tts]`.
 
@@ -49,7 +49,7 @@ pub struct OpenAiTtsProvider {
 
 impl OpenAiTtsProvider {
     /// Create a new OpenAI TTS model_provider from config. Reads
-    /// `[providers.tts.openai.<alias>].api_key` (or via the schema-mirror
+    /// `[tts_providers.openai.<alias>].api_key` (or via the schema-mirror
     /// env grammar). Legacy `OPENAI_API_KEY` env-var fallback eradicated
     /// in V0.8.0.
     pub fn new(config: &TtsProviderConfig) -> Result<Self> {
@@ -60,7 +60,7 @@ impl OpenAiTtsProvider {
             .filter(|k| !k.is_empty())
             .map(ToOwned::to_owned)
             .context(
-                "Missing OpenAI TTS API key: set `[providers.tts.openai.<alias>].api_key` (or via \
+                "Missing OpenAI TTS API key: set `[tts_providers.openai.<alias>].api_key` (or via \
                  `ZEROCLAW_providers__tts__openai__<alias>__api_key=...`).",
             )?;
 
@@ -151,7 +151,7 @@ pub struct ElevenLabsTtsProvider {
 
 impl ElevenLabsTtsProvider {
     /// Create a new ElevenLabs TTS model_provider from config. Reads
-    /// `[providers.tts.elevenlabs.<alias>].api_key`. Legacy
+    /// `[tts_providers.elevenlabs.<alias>].api_key`. Legacy
     /// `ELEVENLABS_API_KEY` env-var fallback eradicated in V0.8.0.
     pub fn new(config: &TtsProviderConfig) -> Result<Self> {
         let api_key = config
@@ -161,7 +161,7 @@ impl ElevenLabsTtsProvider {
             .filter(|k| !k.is_empty())
             .map(ToOwned::to_owned)
             .context(
-                "Missing ElevenLabs API key: set `[providers.tts.elevenlabs.<alias>].api_key` (or \
+                "Missing ElevenLabs API key: set `[tts_providers.elevenlabs.<alias>].api_key` (or \
                  via `ZEROCLAW_providers__tts__elevenlabs__<alias>__api_key=...`).",
             )?;
 
@@ -258,7 +258,7 @@ pub struct GoogleTtsProvider {
 
 impl GoogleTtsProvider {
     /// Create a new Google Cloud TTS model_provider from config, resolving the API key
-    /// from `[providers.tts.google.<alias>].api_key`. Legacy
+    /// from `[tts_providers.google.<alias>].api_key`. Legacy
     /// `GOOGLE_TTS_API_KEY` env-var fallback eradicated in V0.8.0.
     pub fn new(config: &TtsProviderConfig) -> Result<Self> {
         let api_key = config
@@ -268,7 +268,7 @@ impl GoogleTtsProvider {
             .filter(|k| !k.is_empty())
             .map(ToOwned::to_owned)
             .context(
-                "Missing Google TTS API key: set `[providers.tts.google.<alias>].api_key` (or via \
+                "Missing Google TTS API key: set `[tts_providers.google.<alias>].api_key` (or via \
                  `ZEROCLAW_providers__tts__google__<alias>__api_key=...`).",
             )?;
 
@@ -563,11 +563,11 @@ pub struct TtsManager {
 }
 
 impl TtsManager {
-    /// Build a `TtsManager` from `[providers.tts.<type>.<alias>]` instances
+    /// Build a `TtsManager` from `[tts_providers.<type>.<alias>]` instances
     /// in `Config`. Each instance is registered under its dotted alias key
     /// (`<type>.<alias>`). Failures to construct a particular instance are
     /// logged at warn but do not abort the manager.
-    /// Build a `TtsManager` from `[providers.tts.<type>.<alias>]` instances.
+    /// Build a `TtsManager` from `[tts_providers.<type>.<alias>]` instances.
     /// The manager's resolved alias comes from the runtime-active agent's
     /// `tts_provider` field — there is no global default-provider concept,
     /// so when no agent-bound resolution is available the manager refuses
@@ -579,7 +579,7 @@ impl TtsManager {
         // Typed dispatch over the TtsProviders container's named slots. The
         // unknown-type warn-and-skip arm is gone — the typed container can't
         // hold an unrecognized family.
-        for (family, alias, instance) in config.providers.tts.iter_entries() {
+        for (family, alias, instance) in config.tts_providers.iter_entries() {
             let dotted = format!("{family}.{alias}");
             let result: Result<Box<dyn TtsProvider>> = match family {
                 "openai" => OpenAiTtsProvider::new(instance).map(|p| Box::new(p) as _),
@@ -644,7 +644,7 @@ impl TtsManager {
             bail!(
                 "Agent has no tts_provider configured. Set \
                  `agent.<alias>.tts_provider = \"<type>.<alias>\"` referencing a \
-                 [providers.tts.<type>.<alias>] entry."
+                 [tts_providers.<type>.<alias>] entry."
             );
         }
         let voice = self
@@ -708,7 +708,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        cfg.providers.tts.edge.insert(
+        cfg.tts_providers.edge.insert(
             "default".to_string(),
             zeroclaw_config::schema::EdgeTtsProviderConfig {
                 base: TtsProviderConfig {
@@ -729,7 +729,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        cfg.providers.tts.piper.insert(
+        cfg.tts_providers.piper.insert(
             "default".to_string(),
             zeroclaw_config::schema::PiperTtsProviderConfig {
                 base: TtsProviderConfig {

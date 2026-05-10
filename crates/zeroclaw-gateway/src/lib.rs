@@ -466,11 +466,8 @@ pub async fn run_gateway(
     let actual_port = listener.local_addr()?.port();
     let display_addr = format!("{host}:{actual_port}");
 
-    let fallback = config.providers.first_model_provider();
-    let model_provider_name = config
-        .providers
-        .first_model_provider_type()
-        .unwrap_or("openrouter");
+    let fallback = config.first_model_provider();
+    let model_provider_name = config.first_model_provider_type().unwrap_or("openrouter");
     let model_provider: Arc<dyn ModelProvider> = Arc::from(
         zeroclaw_providers::create_resilient_model_provider_with_options(
             model_provider_name,
@@ -481,7 +478,7 @@ pub async fn run_gateway(
         )?,
     );
     // Model resolution (1) the first-model_provider's `model`,
-    // (2) the first configured `[providers.models.<type>.<alias>]`
+    // (2) the first configured `[model_providers.<type>.<alias>]`
     // model with a WARN naming what to set, (3) leave the model empty so
     // the gateway boots and the dashboard can complete browser-based
     // onboarding at /onboard. The chat-dispatch path checks
@@ -499,14 +496,14 @@ pub async fn run_gateway(
         .filter(|m| !m.is_empty())
     {
         Some(m) => m.to_string(),
-        None => match config.providers.resolve_default_model() {
+        None => match config.resolve_default_model() {
             Some(m) => {
                 tracing::warn!(
                     model_provider = model_provider_name,
                     model = %m,
                     "first model_provider has no `model` set; using first configured \
                      providers.models entry as default. Set \
-                     [providers.models.<type>.<alias>] model = \"...\" to silence \
+                     [model_providers.<type>.<alias>] model = \"...\" to silence \
                      this warning.",
                 );
                 m
@@ -517,7 +514,7 @@ pub async fn run_gateway(
                      http://{display_addr}/onboard to complete browser \
                      onboarding. Chat endpoints will return 503 \
                      needs_onboarding until at least one \
-                     [providers.models.<type>.<alias>] model = \"...\" is set."
+                     [model_providers.<type>.<alias>] model = \"...\" is set."
                 );
                 String::new()
             }
@@ -537,7 +534,7 @@ pub async fn run_gateway(
     } else {
         Arc::from(zeroclaw_memory::create_memory_with_storage_and_routes(
             &config.memory,
-            &config.providers.embedding_routes,
+            &config.embedding_routes,
             config.resolve_active_storage(),
             &config.workspace_dir,
             fallback.and_then(|e| e.api_key.as_deref()),
@@ -610,7 +607,6 @@ pub async fn run_gateway(
             &config.workspace_dir,
             &config.agents,
             config
-                .providers
                 .first_model_provider()
                 .and_then(|e| e.api_key.as_deref()),
             &config,
@@ -1567,7 +1563,7 @@ fn needs_onboarding_for(model: &str) -> Option<anyhow::Error> {
     if model.trim().is_empty() {
         Some(anyhow::anyhow!(
             "needs_onboarding: gateway has no model configured. Complete \
-             browser onboarding at /onboard, or set [providers.models.<name>] \
+             browser onboarding at /onboard, or set [model_providers.<name>] \
              model = \"...\" before sending messages."
         ))
     } else {
@@ -1653,13 +1649,12 @@ async fn run_gateway_chat_with_tools(
         // also lets us read out this turn's tokens / cost after the scope
         // exits without racing concurrent webhook traffic that shares the
         // same tracker. Pricing comes from the V3 per-provider shape
-        // (`config.providers.models[*][*].pricing`), keyed as
+        // (`config.model_providers[*][*].pricing`), keyed as
         // `<type>.<alias>` to match how the channels orchestrator builds
         // its `ModelProviderPricing`.
         let cost_tracking_context = state.cost_tracker.as_ref().map(|tracker| {
             let pricing: zeroclaw_runtime::agent::cost::ModelProviderPricing = config
-                .providers
-                .models
+                .model_providers
                 .iter_entries()
                 .filter(|(_, _, base)| !base.pricing.is_empty())
                 .map(|(type_k, alias_k, base)| {
@@ -1816,7 +1811,6 @@ async fn handle_webhook(
     let provider_label = state
         .config
         .lock()
-        .providers
         .first_model_provider_type()
         .unwrap_or("unknown")
         .to_string();

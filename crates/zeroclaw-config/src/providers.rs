@@ -9,22 +9,21 @@ use super::schema::{
     BedrockModelProviderConfig, CerebrasModelProviderConfig, CloudflareModelProviderConfig,
     CohereModelProviderConfig, CopilotModelProviderConfig, CustomModelProviderConfig,
     DeepinfraModelProviderConfig, DeepmystModelProviderConfig, DeepseekModelProviderConfig,
-    DoubaoModelProviderConfig, EmbeddingRouteConfig, FireworksModelProviderConfig,
-    FriendliModelProviderConfig, GeminiCliModelProviderConfig, GeminiModelProviderConfig,
-    GlmModelProviderConfig, GroqModelProviderConfig, HuggingfaceModelProviderConfig,
-    HunyuanModelProviderConfig, HyperbolicModelProviderConfig, KiloCliModelProviderConfig,
-    LeptonModelProviderConfig, LitellmModelProviderConfig, LlamacppModelProviderConfig,
-    LmstudioModelProviderConfig, MinimaxModelProviderConfig, MistralModelProviderConfig,
-    ModelProviderConfig, ModelRouteConfig, MoonshotModelProviderConfig, NebiusModelProviderConfig,
-    NovitaModelProviderConfig, NscaleModelProviderConfig, NvidiaModelProviderConfig,
-    OllamaModelProviderConfig, OpenAIModelProviderConfig, OpenRouterModelProviderConfig,
-    OpencodeModelProviderConfig, OsaurusModelProviderConfig, OvhModelProviderConfig,
-    PerplexityModelProviderConfig, QianfanModelProviderConfig, QwenModelProviderConfig,
-    RekaModelProviderConfig, SambanovaModelProviderConfig, SglangModelProviderConfig,
-    SiliconflowModelProviderConfig, StepfunModelProviderConfig, SyntheticModelProviderConfig,
-    TelnyxModelProviderConfig, TogetherModelProviderConfig, VeniceModelProviderConfig,
-    VercelModelProviderConfig, VllmModelProviderConfig, XaiModelProviderConfig,
-    YiModelProviderConfig, ZaiModelProviderConfig,
+    DoubaoModelProviderConfig, FireworksModelProviderConfig, FriendliModelProviderConfig,
+    GeminiCliModelProviderConfig, GeminiModelProviderConfig, GlmModelProviderConfig,
+    GroqModelProviderConfig, HuggingfaceModelProviderConfig, HunyuanModelProviderConfig,
+    HyperbolicModelProviderConfig, KiloCliModelProviderConfig, LeptonModelProviderConfig,
+    LitellmModelProviderConfig, LlamacppModelProviderConfig, LmstudioModelProviderConfig,
+    MinimaxModelProviderConfig, MistralModelProviderConfig, ModelProviderConfig,
+    MoonshotModelProviderConfig, NebiusModelProviderConfig, NovitaModelProviderConfig,
+    NscaleModelProviderConfig, NvidiaModelProviderConfig, OllamaModelProviderConfig,
+    OpenAIModelProviderConfig, OpenRouterModelProviderConfig, OpencodeModelProviderConfig,
+    OsaurusModelProviderConfig, OvhModelProviderConfig, PerplexityModelProviderConfig,
+    QianfanModelProviderConfig, QwenModelProviderConfig, RekaModelProviderConfig,
+    SambanovaModelProviderConfig, SglangModelProviderConfig, SiliconflowModelProviderConfig,
+    StepfunModelProviderConfig, SyntheticModelProviderConfig, TelnyxModelProviderConfig,
+    TogetherModelProviderConfig, VeniceModelProviderConfig, VercelModelProviderConfig,
+    VllmModelProviderConfig, XaiModelProviderConfig, YiModelProviderConfig, ZaiModelProviderConfig,
 };
 use super::schema::{
     AssemblyAiTranscriptionProviderConfig, DeepgramTranscriptionProviderConfig,
@@ -148,9 +147,9 @@ macro_rules! define_provider_ref {
     };
 }
 
-define_provider_ref!(ModelProviderRef, "providers.models");
-define_provider_ref!(TtsProviderRef, "providers.tts");
-define_provider_ref!(TranscriptionProviderRef, "providers.transcription");
+define_provider_ref!(ModelProviderRef, "model_providers");
+define_provider_ref!(TtsProviderRef, "tts_providers");
+define_provider_ref!(TranscriptionProviderRef, "transcription_providers");
 define_provider_ref!(ChannelRef, "channels");
 
 /// Macro that expands to a single source of truth for the per-provider-type
@@ -245,14 +244,14 @@ macro_rules! emit_model_providers_struct {
         /// extras visible at the type level).
         ///
         /// TOML shape is preserved byte-identical: each named field deserializes
-        /// from the same `[providers.models.<type>.<alias>]` block as before.
+        /// from the same `[model_providers.<type>.<alias>]` block as before.
         ///
         /// Adding a new model_provider family means: define the typed config in
         /// `schema.rs`, then add one row to `for_each_model_provider_slot!` —
         /// every helper picks up the new slot automatically.
         #[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
         #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-        #[prefix = "providers.models"]
+        #[prefix = "model_providers"]
         pub struct ModelProviders {
             $(
                 #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -433,7 +432,7 @@ impl ModelProviders {
 /// openai, elevenlabs, google, edge, piper). No catch-all needed.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "providers.tts"]
+#[prefix = "tts_providers"]
 pub struct TtsProviders {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[nested]
@@ -533,7 +532,7 @@ impl TtsProviders {
 /// groq, openai, deepgram, assemblyai, google, local_whisper.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "providers.transcription"]
+#[prefix = "transcription_providers"]
 pub struct TranscriptionProviders {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[nested]
@@ -588,96 +587,5 @@ impl TranscriptionProviders {
             out.push(("local_whisper", k.as_str()));
         }
         out.into_iter()
-    }
-}
-
-/// Top-level `[providers]` section. Wraps model provider, TTS provider,
-/// transcription provider profiles and routing rules.
-#[derive(Debug, Clone, Serialize, Deserialize, Configurable, Default)]
-#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "providers"]
-pub struct ProvidersConfig {
-    /// Named model model_provider profiles: outer key = model_provider type, inner key = user alias.
-    /// Shape: `[providers.models.<type>.<alias>]` e.g. `[providers.models.anthropic.default]`.
-    /// Typed via `ModelProviders` — every model_provider type has its own typed slot
-    /// carrying the family's `*Endpoint` enum and family-specific extras.
-    #[serde(default)]
-    #[nested]
-    pub models: ModelProviders,
-
-    /// Named TTS provider profiles: outer key = provider family, inner key = user alias.
-    /// Shape: `[providers.tts.<type>.<alias>]` e.g. `[providers.tts.openai.<alias>]`.
-    /// Mirrors `models` with the typed-family split: each TTS family has its
-    /// own slot carrying its `*TtsEndpoint` enum.
-    #[serde(default)]
-    #[nested]
-    pub tts: TtsProviders,
-
-    /// Named transcription / STT provider profiles: outer key = provider family,
-    /// inner key = user alias. Shape:
-    /// `[providers.transcription.<type>.<alias>]` e.g.
-    /// `[providers.transcription.groq.<alias>]`. Six family slots: `groq`,
-    /// `openai`, `deepgram`, `assemblyai`, `google`, `local_whisper`.
-    /// Mirrors `models` and `tts`. Per-agent reference via
-    /// `agent.transcription_provider = "groq.<alias>"` (resolved at validation
-    /// time against this section's configured aliases).
-    #[serde(default)]
-    #[nested]
-    pub transcription: TranscriptionProviders,
-
-    /// Model routing rules — route `hint:<name>` to specific model provider + model combos.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub model_routes: Vec<ModelRouteConfig>,
-
-    /// Embedding routing rules — route `hint:<name>` to specific model_provider+model combos.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub embedding_routes: Vec<EmbeddingRouteConfig>,
-}
-
-impl ProvidersConfig {
-    /// Return the first concrete `model` string available for use as a default.
-    ///
-    /// Scans every typed slot's entries (iteration order is the macro slot
-    /// order) for one that has `model` set.
-    ///
-    /// Returns `None` only when no model_provider entry has any model configured at all.
-    pub fn resolve_default_model(&self) -> Option<String> {
-        self.models
-            .iter_entries()
-            .filter_map(|(_, _, base)| base.model.as_deref().map(str::trim))
-            .find(|m| !m.is_empty())
-            .map(ToString::to_string)
-    }
-
-    /// Return the first `ModelProviderConfig` (the shared base) from `models`,
-    /// if any exists.
-    pub fn first_model_provider(&self) -> Option<&ModelProviderConfig> {
-        self.models.iter_entries().next().map(|(_, _, base)| base)
-    }
-
-    /// Return a mutable reference to the first `ModelProviderConfig` (the
-    /// shared base) from `models`, if any exists.
-    pub fn first_model_provider_mut(&mut self) -> Option<&mut ModelProviderConfig> {
-        self.models
-            .iter_entries_mut()
-            .next()
-            .map(|(_, _, base)| base)
-    }
-
-    /// Return the model_provider type key of the first entry in `models`, if any.
-    /// Use this when callers need the bare type name (e.g. model_provider routing
-    /// factories that take `"openrouter"` not `"openrouter.default"`).
-    pub fn first_model_provider_type(&self) -> Option<&'static str> {
-        self.models.iter_entries().next().map(|(ty, _, _)| ty)
-    }
-
-    /// Return the dotted `<type>.<alias>` identifier of the first configured
-    /// model model_provider entry, if any. Use this when callers need the
-    /// alias reference (matches `agents.<x>.model_provider` values).
-    pub fn first_provider_alias(&self) -> Option<String> {
-        self.models
-            .iter_entries()
-            .next()
-            .map(|(ty, alias, _)| format!("{ty}.{alias}"))
     }
 }

@@ -815,7 +815,7 @@ pub async fn handle_map_key(
 #[derive(Debug, Deserialize)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 pub struct RenameMapKeyBody {
-    /// Section path, e.g. `channels.discord` or `providers.models.anthropic`.
+    /// Section path, e.g. `channels.discord` or `model_providers.anthropic`.
     pub path: String,
     /// Current alias name.
     pub from: String,
@@ -1514,16 +1514,16 @@ mod tests {
     #[test]
     fn json_pointer_to_dotted_handles_pointer_form() {
         assert_eq!(
-            json_pointer_to_dotted("/providers/models/openrouter/api-key"),
-            "providers.models.openrouter.api-key"
+            json_pointer_to_dotted("/model_providers/openrouter/api-key"),
+            "model_providers.openrouter.api-key"
         );
     }
 
     #[test]
     fn json_pointer_to_dotted_passes_dotted_through() {
         assert_eq!(
-            json_pointer_to_dotted("providers.models.openrouter.api-key"),
-            "providers.models.openrouter.api-key"
+            json_pointer_to_dotted("model_providers.openrouter.api-key"),
+            "model_providers.openrouter.api-key"
         );
         assert_eq!(
             json_pointer_to_dotted("scheduler.max_concurrent"),
@@ -1613,10 +1613,10 @@ mod tests {
         // by setting a known model provider entry. The model providers map
         // is set up via map keys, so use a path that's unambiguously float.
         // Fall back to set_prop on a known float location:
-        match cfg.set_prop("providers.models.openai.temperature", "0.7") {
+        match cfg.set_prop("model_providers.openai.temperature", "0.7") {
             Ok(()) => {
                 let actual = cfg
-                    .get_prop("providers.models.openai.temperature")
+                    .get_prop("model_providers.openai.temperature")
                     .expect("get_prop float");
                 let want_typed =
                     json_to_setprop_string(&serde_json::json!(0.7), Some(PropKind::Float))
@@ -1870,7 +1870,7 @@ mod tests {
         // shape carries neither a `value` field nor a length-leaking string.
         // If anyone ever adds a field to SecretResponse, this test fires.
         let r = SecretResponse {
-            path: "providers.models.ollama.api-key".into(),
+            path: "model_providers.ollama.api-key".into(),
             populated: true,
         };
         let json = serde_json::to_value(&r).expect("serialize");
@@ -1890,8 +1890,8 @@ mod tests {
     #[test]
     fn list_entry_for_secret_omits_value_field() {
         let entry = ListEntry {
-            path: "providers.models.ollama.api-key".into(),
-            category: "providers".into(),
+            path: "model_providers.ollama.api-key".into(),
+            category: "model_providers".into(),
             kind: "string",
             type_hint: "Option<String>",
             value: None,
@@ -1899,7 +1899,7 @@ mod tests {
             is_secret: true,
             is_env_overridden: false,
             enum_variants: vec![],
-            onboard_section: Some("providers"),
+            onboard_section: Some("model_providers"),
         };
         let json = serde_json::to_value(&entry).expect("serialize");
         let obj = json.as_object().expect("object");
@@ -1916,7 +1916,7 @@ mod tests {
     #[test]
     fn drift_entry_for_secret_omits_both_values() {
         let entry = DriftEntry {
-            path: "providers.models.ollama.api-key".into(),
+            path: "model_providers.ollama.api-key".into(),
             secret: true,
             drifted: true,
             in_memory_value: None,

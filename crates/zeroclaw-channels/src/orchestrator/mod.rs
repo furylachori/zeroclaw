@@ -847,20 +847,18 @@ fn canonical_model_provider_name(name: &str) -> Option<String> {
 
 fn resolved_default_provider(config: &Config) -> String {
     config
-        .providers
         .first_model_provider_type()
         .unwrap_or("openrouter")
         .to_string()
 }
 
 /// Resolve the default model for channel startup: the first configured
-/// `[providers.models.<type>.<alias>]` entry's `model` field. Hard-fails
+/// `[model_providers.<type>.<alias>]` entry's `model` field. Hard-fails
 /// with an actionable error when nothing is configured. There is no
 /// global fallback provider — every callsite either resolves through an
 /// agent's `model_provider` or comes through `first_provider()`.
 fn resolved_default_model(config: &Config) -> anyhow::Result<String> {
     if let Some(m) = config
-        .providers
         .first_model_provider()
         .and_then(|e| e.model.as_deref())
         .map(str::trim)
@@ -869,8 +867,8 @@ fn resolved_default_model(config: &Config) -> anyhow::Result<String> {
         return Ok(m.to_string());
     }
     anyhow::bail!(
-        "no model configured: no [providers.models.<type>.<alias>] entry has a \
-         `model` field set. Configure at least one [providers.models.<type>.<alias>] \
+        "no model configured: no [model_providers.<type>.<alias>] entry has a \
+         `model` field set. Configure at least one [model_providers.<type>.<alias>] \
          model = \"...\", or define a [[model_routes]] hint, before starting channels.",
     )
 }
@@ -886,8 +884,8 @@ fn runtime_defaults_from_config(
 ) -> anyhow::Result<ChannelRuntimeDefaults> {
     let dotted = model_provider.split_once('.');
     let entry = dotted
-        .and_then(|(type_key, alias_key)| config.providers.models.find(type_key, alias_key))
-        .or_else(|| config.providers.first_model_provider());
+        .and_then(|(type_key, alias_key)| config.model_providers.find(type_key, alias_key))
+        .or_else(|| config.first_model_provider());
     let default_model_provider = dotted
         .map(|(t, _)| t.to_string())
         .unwrap_or_else(|| resolved_default_provider(config));
@@ -978,16 +976,16 @@ async fn load_runtime_defaults_from_config_file(
     if let Some(zeroclaw_dir) = path.parent() {
         let store =
             zeroclaw_runtime::security::SecretStore::new(zeroclaw_dir, parsed.secrets.encrypt);
-        if let Some(fallback_entry) = parsed.providers.first_model_provider_mut() {
+        if let Some(fallback_entry) = parsed.first_model_provider_mut() {
             decrypt_optional_secret_for_runtime_reload(
                 &store,
                 &mut fallback_entry.api_key,
-                "config.providers.models.api_key",
+                "config.model_providers.api_key",
             )?;
         }
         // Decrypt TTS model_provider API keys for runtime reload (typed slots).
-        for (family, alias, instance) in parsed.providers.tts.iter_entries_mut() {
-            let label = format!("config.providers.tts.{family}.{alias}.api_key");
+        for (family, alias, instance) in parsed.tts_providers.iter_entries_mut() {
+            let label = format!("config.tts_providers.{family}.{alias}.api_key");
             decrypt_optional_secret_for_runtime_reload(&store, &mut instance.api_key, &label)?;
         }
     }
@@ -5467,7 +5465,7 @@ pub async fn start_channels(
         tracing::warn!(
             "Channels supervisor exiting: no model configured but \
              channels are present. Complete browser onboarding at \
-             /onboard (or set [providers.models.<type>.<alias>] model = \"...\" \
+             /onboard (or set [model_providers.<type>.<alias>] model = \"...\" \
              and reload the daemon) before channels can route messages."
         );
         return Ok(());
@@ -5521,7 +5519,7 @@ pub async fn start_channels(
     // `provider_runtime_options_for_agent`.
     let agent_provider_entry = config
         .model_provider_for_agent(&agent_alias)
-        .or_else(|| config.providers.first_model_provider());
+        .or_else(|| config.first_model_provider());
     let provider_name = config
         .agents
         .get(&agent_alias)
@@ -5578,7 +5576,7 @@ pub async fn start_channels(
             anyhow::anyhow!(
                 "no model configured: agents.{agent_alias}.model_provider does not resolve to a \
                  ModelProviderConfig with a `model` field, and providers.models is empty. \
-                 Configure `[providers.models.<type>.<alias>] model = \"...\"` and reference it \
+                 Configure `[model_providers.<type>.<alias>] model = \"...\"` and reference it \
                  from `agents.{agent_alias}.model_provider`."
             )
         })?;
@@ -5587,7 +5585,7 @@ pub async fn start_channels(
         .unwrap_or(0.7);
     let mem: Arc<dyn Memory> = Arc::from(zeroclaw_memory::create_memory_with_storage_and_routes(
         &config.memory,
-        &config.providers.embedding_routes,
+        &config.embedding_routes,
         config.resolve_active_storage(),
         &config.workspace_dir,
         agent_provider_entry.and_then(|e| e.api_key.as_deref()),
@@ -6053,7 +6051,7 @@ pub async fn start_channels(
         non_cli_excluded_tools: Arc::new(risk_profile.excluded_tools.clone()),
         autonomy_level: risk_profile.level,
         tool_call_dedup_exempt: Arc::new(agent.tool_call_dedup_exempt.clone()),
-        model_routes: Arc::new(config.providers.model_routes.clone()),
+        model_routes: Arc::new(config.model_routes.clone()),
         query_classification: config.query_classification.clone(),
         ack_reactions: config.channels.ack_reactions,
         show_tool_calls: config.channels.show_tool_calls,
@@ -6085,8 +6083,7 @@ pub async fn start_channels(
         )
         .map(|tracker| {
             let pricing: zeroclaw_runtime::agent::cost::ModelProviderPricing = config
-                .providers
-                .models
+                .model_providers
                 .iter_entries()
                 .map(|(type_k, alias_k, profile)| {
                     (format!("{type_k}.{alias_k}"), profile.pricing.clone())

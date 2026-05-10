@@ -842,7 +842,7 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                     // into the child's static field paths: a child field named
                     // `<inner_prefix>.api-key` becomes
                     // `<my_prefix>.<field>.<hm_key>.api-key`. Without this, prop_fields()
-                    // never surfaces e.g. `providers.models.anthropic.default.api-key`,
+                    // never surfaces e.g. `model_providers.anthropic.default.api-key`,
                     // so onboard has no way to prompt for it.
                     nested_prop_fields.push(quote! {
                         {

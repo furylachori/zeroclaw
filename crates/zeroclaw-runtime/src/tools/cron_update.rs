@@ -274,7 +274,7 @@ mod tests {
             "default".to_string(),
             zeroclaw_config::schema::RiskProfileConfig::default(),
         );
-        config.providers.models.openrouter.insert(
+        config.model_providers.openrouter.insert(
             "default".to_string(),
             zeroclaw_config::schema::OpenRouterModelProviderConfig::default(),
         );
@@ -298,8 +298,7 @@ mod tests {
             .entry("default".to_string())
             .or_default();
         config
-            .providers
-            .models
+            .model_providers
             .ensure("openrouter", "default")
             .expect("known family");
         config.agents.entry("test-agent".to_string()).or_insert(

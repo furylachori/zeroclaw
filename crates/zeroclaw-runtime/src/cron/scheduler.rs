@@ -338,7 +338,6 @@ async fn run_agent_job(
             config,
             agent_alias,
             config
-                .providers
                 .first_model_provider()
                 .and_then(|e| e.api_key.as_deref()),
         )
@@ -409,7 +408,6 @@ async fn run_agent_job(
                     None,
                     model_override,
                     config
-                        .providers
                         .first_model_provider()
                         .and_then(|e| e.temperature)
                         .unwrap_or(0.7),
@@ -444,7 +442,6 @@ async fn run_agent_job(
                 config,
                 agent_alias,
                 config
-                    .providers
                     .first_model_provider()
                     .and_then(|e| e.api_key.as_deref()),
             )
@@ -765,7 +762,7 @@ mod tests {
             "default".to_string(),
             zeroclaw_config::schema::RiskProfileConfig::default(),
         );
-        config.providers.models.openrouter.insert(
+        config.model_providers.openrouter.insert(
             "default".to_string(),
             zeroclaw_config::schema::OpenRouterModelProviderConfig::default(),
         );

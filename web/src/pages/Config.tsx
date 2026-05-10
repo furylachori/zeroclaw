@@ -79,13 +79,15 @@ const GROUP_ORDER = [
 // not in this list fall back to alphabetical sort.
 const FOUNDATION_ORDER: Record<string, number> = {
   workspace: 0,
-  providers: 1,
-  channels: 2,
-  memory: 3,
-  hardware: 4,
-  tunnel: 5,
-  personality: 6,
-  agents: 7,
+  model_providers: 1,
+  tts_providers: 2,
+  transcription_providers: 3,
+  channels: 4,
+  memory: 5,
+  hardware: 6,
+  tunnel: 7,
+  personality: 8,
+  agents: 9,
 };
 
 export default function Config() {
@@ -221,7 +223,10 @@ export default function Config() {
   // Two-tier alias sections route /config/<section>/<type>/<alias>.
   const needsAliasTier =
     activeSection?.has_picker &&
-    (activeSection.key === 'providers' || activeSection.key === 'channels');
+    (activeSection.key === 'model_providers'
+      || activeSection.key === 'tts_providers'
+      || activeSection.key === 'transcription_providers'
+      || activeSection.key === 'channels');
   // One-tier alias sections route /config/<section>/<alias> directly.
   // The list lives at the top of the section (no type selection step).
   const isOneTierAliasSection = activeSection?.key === 'agents';
@@ -264,9 +269,9 @@ export default function Config() {
     // /config/:section/:type/:alias — field form
     if (typeParam && aliasParam) {
       const fieldsPrefix = needsAliasTier
-        ? activeSection.key === 'providers'
-          ? `providers.models.${typeParam}.${aliasParam}`
-          : `channels.${typeParam}.${aliasParam}`
+        ? activeSection.key === 'channels'
+          ? `channels.${typeParam}.${aliasParam}`
+          : `${activeSection.key}.${typeParam}.${aliasParam}`
         : typeParam;
       return (
         <div className="flex flex-col gap-3">
@@ -564,11 +569,7 @@ function AliasListView({
   // Two-tier sections (providers, channels) put the type in the path;
   // one-tier sections (agents, risk_profiles, etc.) just use the section
   // key as-is. The map-keys endpoint then returns the alias names directly.
-  const mapPath = typeKey
-    ? sectionKey === 'providers'
-      ? `providers.models.${typeKey}`
-      : `${sectionKey}.${typeKey}`
-    : sectionKey;
+  const mapPath = typeKey ? `${sectionKey}.${typeKey}` : sectionKey;
 
   useEffect(() => {
     let cancelled = false;

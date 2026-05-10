@@ -72,7 +72,7 @@ impl Section {
     pub fn as_path_prefix(self) -> Option<&'static str> {
         match self {
             Self::All => None,
-            Self::Providers => Some("providers"),
+            Self::Providers => Some("model_providers"),
             Self::Channels => Some("channels"),
             Self::Memory => Some("memory"),
             Self::Hardware => Some("hardware"),
@@ -92,7 +92,7 @@ impl Section {
     pub fn from_path(path: &str) -> Option<Self> {
         let prefix = path.split('.').next()?;
         match prefix {
-            "providers" => Some(Self::Providers),
+            "model_providers" => Some(Self::Providers),
             "channels" => Some(Self::Channels),
             "memory" => Some(Self::Memory),
             "hardware" => Some(Self::Hardware),
@@ -417,7 +417,7 @@ async fn prompt_field(
             }
         }
         PropKind::Object => {
-            // Struct-shaped scalar (e.g. providers.models.<id>.pricing).
+            // Struct-shaped scalar (e.g. model_providers.<id>.pricing).
             // Same TUI fallback as ObjectArray: edit as raw JSON; the
             // dashboard renders a proper sub-form.
             let prefill = if is_set {
@@ -520,7 +520,7 @@ async fn skip_if_configured(
 /// from `Config::default()`'s idle state).
 fn section_has_signal(cfg: &Config, section_key: &str) -> bool {
     match section_key {
-        "providers" => !cfg.providers.models.is_empty(),
+        "model_providers" => !cfg.model_providers.is_empty(),
         // `channels.cli: bool` is a default-true scalar that lives directly
         // under `channels.*`, so a bare `starts_with("channels.")` check
         // fires on every fresh install. Require a nested channel config
@@ -730,11 +730,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
     let entries = zeroclaw_providers::list_model_providers();
 
     loop {
-        let current_type = cfg
-            .providers
-            .first_model_provider_type()
-            .unwrap_or("")
-            .to_string();
+        let current_type = cfg.first_model_provider_type().unwrap_or("").to_string();
 
         let (picked, selected_base_url) = match &flags.model_provider {
             Some(forced) => (forced.clone(), None),
@@ -743,7 +739,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                 let mut options: Vec<SelectItem> = entries
                     .iter()
                     .map(|p| {
-                        let configured = cfg.providers.models.contains_model_provider_type(p.name);
+                        let configured = cfg.model_providers.contains_model_provider_type(p.name);
                         let is_active = p.name == current_type;
                         let badge = match (is_active, configured) {
                             (true, _) => Some("[active]".into()),
@@ -788,7 +784,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
             "default".to_string()
         } else {
             let existing_aliases: Vec<String> = cfg
-                .get_map_keys(&format!("providers.models.{picked}"))
+                .get_map_keys(&format!("model_providers.{picked}"))
                 .unwrap_or_default();
             if existing_aliases.is_empty() {
                 let Some(a) = prompt_alias_name(ui, "default").await? else {
@@ -823,8 +819,8 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
         // `persist()` for a real value (api_key, model, …) carries it to
         // disk. If the user backs out before any value is set, the back
         // paths drop the entry so it never reaches the file.
-        let is_new_entry = cfg.providers.models.find(&picked, &alias).is_none();
-        cfg.providers.models.ensure(&picked, &alias);
+        let is_new_entry = cfg.model_providers.find(&picked, &alias).is_none();
+        cfg.model_providers.ensure(&picked, &alias);
 
         // Per-family typed configs now derive their own default endpoint
         // URI via the `ModelEndpoint` trait at runtime construction time.
@@ -834,7 +830,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
         // family endpoint resolution happens family-side rather than via
         // pre-populated entry fields.
         if let Some(base_url) = selected_base_url.as_deref() {
-            cfg.set_prop(&format!("providers.models.{picked}.{alias}.uri"), base_url)?;
+            cfg.set_prop(&format!("model_providers.{picked}.{alias}.uri"), base_url)?;
         }
 
         let display_name = entries
@@ -853,7 +849,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
         // Apply CLI-flag overrides up front, then skip those names in the
         // interactive pass so the user isn't re-prompted for what they already
         // passed on the command line.
-        let prefix = format!("providers.models.{picked}.{alias}");
+        let prefix = format!("model_providers.{picked}.{alias}");
         let api_key_path = format!("{prefix}.api-key");
         if let Some(api_key) = &flags.api_key {
             persist(cfg, &api_key_path, api_key).await?;
@@ -874,7 +870,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                         return Ok(Nav::Back);
                     }
                     if is_new_entry {
-                        cfg.providers.models.remove_alias(&picked, &alias);
+                        cfg.model_providers.remove_alias(&picked, &alias);
                     }
                     continue;
                 }
@@ -891,7 +887,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                         return Ok(Nav::Back);
                     }
                     if is_new_entry {
-                        cfg.providers.models.remove_alias(&picked, &alias);
+                        cfg.model_providers.remove_alias(&picked, &alias);
                     }
                     continue;
                 }
@@ -916,7 +912,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
         break;
     }
 
-    mark_completed(cfg, "providers").await?;
+    mark_completed(cfg, "model_providers").await?;
     Ok(Nav::Done)
 }
 
@@ -956,16 +952,16 @@ async fn offer_advanced_settings(
 /// Calls `ModelProvider::list_models()` (no auth — see `zeroclaw-providers`
 /// models_dev + native public endpoints). Falls back to a manual string
 /// input when the model_provider doesn't expose a no-auth list or the fetch fails.
-/// `prefix` is the full alias-level path: `providers.models.<type>.<alias>`.
+/// `prefix` is the full alias-level path: `model_providers.<type>.<alias>`.
 async fn prompt_model(cfg: &mut Config, ui: &mut dyn OnboardUi, prefix: &str) -> Result<Nav> {
     let model_path = format!("{prefix}.model");
     let current = cfg.get_prop(&model_path).unwrap_or_default();
     let is_set = !current.is_empty() && current != "<unset>";
-    // Extract type and alias from "providers.models.<type>.<alias>".
-    let (model_provider, profile) = match prefix.strip_prefix("providers.models.") {
+    // Extract type and alias from "model_providers.<type>.<alias>".
+    let (model_provider, profile) = match prefix.strip_prefix("model_providers.") {
         Some(rest) => {
             if let Some((type_k, alias_k)) = rest.split_once('.') {
-                let profile = cfg.providers.models.find(type_k, alias_k);
+                let profile = cfg.model_providers.find(type_k, alias_k);
                 (type_k.to_string(), profile)
             } else {
                 (rest.to_string(), None)
@@ -1722,7 +1718,7 @@ fn available_channel_aliases(cfg: &Config) -> Vec<String> {
 fn available_model_provider_aliases(cfg: &Config) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for f in cfg.prop_fields() {
-        if let Some(rest) = f.name.strip_prefix("providers.models.") {
+        if let Some(rest) = f.name.strip_prefix("model_providers.") {
             let mut parts = rest.splitn(3, '.');
             if let (Some(ty), Some(alias), Some(_leaf)) = (parts.next(), parts.next(), parts.next())
             {
@@ -1793,12 +1789,11 @@ mod tests {
     async fn section_has_signal_providers_requires_models_entry() {
         let temp = TempDir::new().unwrap();
         let mut cfg = test_cfg(&temp);
-        assert!(!section_has_signal(&cfg, "providers"));
-        cfg.providers
-            .models
+        assert!(!section_has_signal(&cfg, "model_providers"));
+        cfg.model_providers
             .ensure("anthropic", "default")
             .expect("anthropic typed slot");
-        assert!(section_has_signal(&cfg, "providers"));
+        assert!(section_has_signal(&cfg, "model_providers"));
     }
 
     #[tokio::test]
@@ -2024,8 +2019,7 @@ mod tests {
             .unwrap();
 
         let model_cfg = cfg
-            .providers
-            .models
+            .model_providers
             .find("custom", "default")
             .expect("custom model_provider entry should be seeded");
         assert_eq!(model_cfg.api_key.as_deref(), Some("sk-custom-test"));
@@ -2044,21 +2038,19 @@ mod tests {
         )
         .await;
         let entry = cfg
-            .providers
-            .models
+            .model_providers
             .ensure("custom", "default")
             .expect("custom typed slot");
         entry.api_key = Some("sk-gateway-test".into());
         entry.uri = Some(base_url);
         let mut ui = QuickUi::new().with("Model", "gateway-large");
 
-        prompt_model(&mut cfg, &mut ui, "providers.models.custom.default")
+        prompt_model(&mut cfg, &mut ui, "model_providers.custom.default")
             .await
             .unwrap();
 
         let model_cfg = cfg
-            .providers
-            .models
+            .model_providers
             .find("custom", "default")
             .expect("custom model_provider entry should remain configured");
         assert_eq!(model_cfg.model.as_deref(), Some("gateway-large"));
@@ -2087,8 +2079,7 @@ mod tests {
             .unwrap();
 
         let model_cfg = cfg
-            .providers
-            .models
+            .model_providers
             .find("anthropic", "default")
             .expect("anthropic.default entry should be seeded");
         assert_eq!(model_cfg.model.as_deref(), Some("claude-opus-4-7"));
@@ -2097,7 +2088,7 @@ mod tests {
             cfg.onboard_state
                 .completed_sections
                 .iter()
-                .any(|s| s == "providers"),
+                .any(|s| s == "model_providers"),
             "model_providers section should mark completed"
         );
     }
@@ -2318,25 +2309,23 @@ mod tests {
 
     // US-7 / prompt_model regression: model is written to the alias the user
     // actually selected, not to a hardcoded ".default." path. A non-default
-    // alias ("work") must produce providers.models.anthropic.work.model, never
-    // providers.models.anthropic.default.model.
+    // alias ("work") must produce model_providers.anthropic.work.model, never
+    // model_providers.anthropic.default.model.
     #[tokio::test]
     async fn prompt_model_writes_to_actual_alias_not_hardcoded_default() {
         let temp = TempDir::new().unwrap();
         let mut cfg = test_cfg(&temp);
-        cfg.providers
-            .models
+        cfg.model_providers
             .anthropic
             .insert("work".into(), AnthropicModelProviderConfig::default());
 
         let mut ui = QuickUi::new().with("Model", "claude-opus-4-7");
-        prompt_model(&mut cfg, &mut ui, "providers.models.anthropic.work")
+        prompt_model(&mut cfg, &mut ui, "model_providers.anthropic.work")
             .await
             .unwrap();
 
         let work_model = cfg
-            .providers
-            .models
+            .model_providers
             .find("anthropic", "work")
             .and_then(|c| c.model.as_deref());
         assert_eq!(
@@ -2346,8 +2335,7 @@ mod tests {
         );
 
         let default_model = cfg
-            .providers
-            .models
+            .model_providers
             .find("anthropic", "default")
             .and_then(|c| c.model.as_deref());
         assert!(
@@ -2364,7 +2352,7 @@ mod tests {
         let mut cfg = test_cfg(&temp);
 
         // Pre-seed an existing alias with a known api_key.
-        cfg.providers.models.anthropic.insert(
+        cfg.model_providers.anthropic.insert(
             "my-alias".to_string(),
             AnthropicModelProviderConfig {
                 base: ModelProviderConfig {
@@ -2389,8 +2377,7 @@ mod tests {
             .unwrap();
 
         let alias_cfg = cfg
-            .providers
-            .models
+            .model_providers
             .find("anthropic", "my-alias")
             .expect("my-alias must survive ESC on an existing entry");
         assert_eq!(
@@ -2421,7 +2408,7 @@ mod tests {
             .await
             .unwrap();
 
-        let entry = cfg.providers.models.find("anthropic", "fresh");
+        let entry = cfg.model_providers.find("anthropic", "fresh");
         assert!(
             entry.is_none(),
             "in-progress 'fresh' alias must be removed after ESC (never persisted)"
@@ -2487,13 +2474,13 @@ mod tests {
         // no insert needed to access it. The test below verifies that a dotted
         // alias key is rejected by `create_map_key`.
         // Now try to add an alias with a dot in the name.
-        let result = cfg.create_map_key("providers.models.anthropic", "my.alias");
+        let result = cfg.create_map_key("model_providers.anthropic", "my.alias");
         assert!(
             result.is_err(),
             "dot in double-nested alias must be rejected"
         );
         assert!(
-            cfg.providers.models.find("anthropic", "my.alias").is_none(),
+            cfg.model_providers.find("anthropic", "my.alias").is_none(),
             "no entry should be inserted into the inner map"
         );
     }
@@ -2527,17 +2514,15 @@ mod tests {
     async fn get_map_keys_returns_all_provider_aliases() {
         let temp = TempDir::new().unwrap();
         let mut cfg = test_cfg(&temp);
-        cfg.providers
-            .models
+        cfg.model_providers
             .anthropic
             .insert("default".into(), AnthropicModelProviderConfig::default());
-        cfg.providers
-            .models
+        cfg.model_providers
             .anthropic
             .insert("work".into(), AnthropicModelProviderConfig::default());
 
         let mut keys = cfg
-            .get_map_keys("providers.models.anthropic")
+            .get_map_keys("model_providers.anthropic")
             .expect("anthropic has two aliases — get_map_keys must return Some");
         keys.sort();
         assert_eq!(keys, vec!["default", "work"]);

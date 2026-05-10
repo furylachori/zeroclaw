@@ -55,7 +55,7 @@ const COMPLETED_SECTIONS_PATH = 'onboard_state.completed-sections';
 // `/onboard` stays a focused setup-completion flow.
 const ONBOARD_SECTION_ORDER = [
   'workspace',
-  'providers',
+  'model_providers',
   'channels',
   'memory',
   'hardware',
@@ -153,7 +153,12 @@ export default function Onboard() {
 
   const handlePick = async (item: PickerItem) => {
     if (!activeSection) return;
-    if (activeSection.key === 'providers' || activeSection.key === 'channels') {
+    if (
+      activeSection.key === 'model_providers'
+      || activeSection.key === 'tts_providers'
+      || activeSection.key === 'transcription_providers'
+      || activeSection.key === 'channels'
+    ) {
       setPickedType({ item, sectionKey: activeSection.key });
       return;
     }
@@ -467,9 +472,7 @@ function OnboardAliasListView({
   const [aliasError, setAliasError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const mapPath = sectionKey === 'providers'
-    ? `providers.models.${typeKey}`
-    : `channels.${typeKey}`;
+  const mapPath = `${sectionKey}.${typeKey}`;
 
   useEffect(() => {
     let cancelled = false;

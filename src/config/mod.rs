@@ -87,7 +87,7 @@ mod tests {
     fn reexported_config_default_is_constructible() {
         let config = Config::default();
 
-        assert!(config.providers.models.is_empty());
+        assert!(config.model_providers.is_empty());
     }
 
     #[test]

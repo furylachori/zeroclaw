@@ -146,7 +146,7 @@ fn security_full_autonomy_parses() {
 #[test]
 fn security_config_debug_does_not_leak_api_key() {
     let mut config = Config::default();
-    config.providers.models.openrouter.insert(
+    config.model_providers.openrouter.insert(
         "default".to_string(),
         zeroclaw::config::OpenRouterModelProviderConfig {
             base: zeroclaw::config::ModelProviderConfig {

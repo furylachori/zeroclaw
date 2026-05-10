@@ -220,8 +220,7 @@ fn doctor_model_targets(config: &Config, provider_override: Option<&str>) -> Vec
     }
 
     config
-        .providers
-        .models
+        .model_providers
         .iter_entries()
         .map(|(type_k, alias_k, _)| format!("{type_k}.{alias_k}"))
         .collect()
@@ -456,8 +455,8 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
     }
 
     // ModelProvider validity (first configured model model_provider)
-    let primary_model_provider_doc = config.providers.first_model_provider();
-    let primary_model_provider = config.providers.first_model_provider_type();
+    let primary_model_provider_doc = config.first_model_provider();
+    let primary_model_provider = config.first_model_provider_type();
     if let Some(model_provider) = primary_model_provider {
         if let Some(reason) = provider_validation_error(model_provider) {
             items.push(DiagItem::error(
@@ -534,7 +533,7 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
     }
 
     // Model routes validation
-    for route in &config.providers.model_routes {
+    for route in &config.model_routes {
         if route.hint.is_empty() {
             items.push(DiagItem::warn(cat, "model route with empty hint"));
         }
@@ -556,7 +555,7 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
     }
 
     // Embedding routes validation
-    for route in &config.providers.embedding_routes {
+    for route in &config.embedding_routes {
         if route.hint.trim().is_empty() {
             items.push(DiagItem::warn(cat, "embedding route with empty hint"));
         }
@@ -593,7 +592,6 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         && !config
-            .providers
             .embedding_routes
             .iter()
             .any(|route| route.hint.trim() == hint)
@@ -1076,10 +1074,8 @@ mod tests {
         // (HashMap iteration order is unspecified — multiple entries
         // produce a coin-flip first pick).
         let mut config = Config::default();
-        config.providers.models = Default::default();
         config
-            .providers
-            .models
+            .model_providers
             .ensure("openrouter", "default")
             .expect("known model_provider type")
             .temperature = Some(5.0);
@@ -1093,10 +1089,8 @@ mod tests {
     #[test]
     fn config_validation_accepts_valid_temperature() {
         let mut config = Config::default();
-        config.providers.models = Default::default();
         config
-            .providers
-            .models
+            .model_providers
             .ensure("openrouter", "default")
             .expect("known model_provider type")
             .temperature = Some(0.7);
@@ -1154,13 +1148,15 @@ mod tests {
 
     #[test]
     fn config_validation_warns_empty_model_route() {
-        let mut config = Config::default();
-        config.providers.model_routes = vec![zeroclaw_config::schema::ModelRouteConfig {
-            hint: "fast".into(),
-            model_provider: "groq".into(),
-            model: String::new(),
-            api_key: None,
-        }];
+        let config = Config {
+            model_routes: vec![zeroclaw_config::schema::ModelRouteConfig {
+                hint: "fast".into(),
+                model_provider: "groq".into(),
+                model: String::new(),
+                api_key: None,
+            }],
+            ..Config::default()
+        };
         let mut items = Vec::new();
         check_config_semantics(&config, &mut items);
         let route_item = items.iter().find(|i| i.message.contains("empty model"));
@@ -1170,14 +1166,16 @@ mod tests {
 
     #[test]
     fn config_validation_warns_empty_embedding_route_model() {
-        let mut config = Config::default();
-        config.providers.embedding_routes = vec![zeroclaw_config::schema::EmbeddingRouteConfig {
-            hint: "semantic".into(),
-            model_provider: "openai".into(),
-            model: String::new(),
-            dimensions: Some(1536),
-            api_key: None,
-        }];
+        let config = Config {
+            embedding_routes: vec![zeroclaw_config::schema::EmbeddingRouteConfig {
+                hint: "semantic".into(),
+                model_provider: "openai".into(),
+                model: String::new(),
+                dimensions: Some(1536),
+                api_key: None,
+            }],
+            ..Config::default()
+        };
 
         let mut items = Vec::new();
         check_config_semantics(&config, &mut items);
@@ -1191,14 +1189,16 @@ mod tests {
 
     #[test]
     fn config_validation_warns_invalid_embedding_route_provider() {
-        let mut config = Config::default();
-        config.providers.embedding_routes = vec![zeroclaw_config::schema::EmbeddingRouteConfig {
-            hint: "semantic".into(),
-            model_provider: "groq".into(),
-            model: "text-embedding-3-small".into(),
-            dimensions: None,
-            api_key: None,
-        }];
+        let config = Config {
+            embedding_routes: vec![zeroclaw_config::schema::EmbeddingRouteConfig {
+                hint: "semantic".into(),
+                model_provider: "groq".into(),
+                model: "text-embedding-3-small".into(),
+                dimensions: None,
+                api_key: None,
+            }],
+            ..Config::default()
+        };
 
         let mut items = Vec::new();
         check_config_semantics(&config, &mut items);

@@ -122,7 +122,7 @@ pub async fn handle_api_status(
         .unwrap_or_else(zeroclaw_runtime::i18n::detect_locale);
 
     let body = serde_json::json!({
-        "model_provider": config.providers.first_model_provider_type(),
+        "model_provider": config.first_model_provider_type(),
         "model": state.model,
         "temperature": state.temperature,
         "uptime_seconds": health.uptime_seconds,
@@ -1328,7 +1328,7 @@ mod tests {
     fn with_test_agent(
         mut config: zeroclaw_config::schema::Config,
     ) -> zeroclaw_config::schema::Config {
-        config.providers.models.openrouter.insert(
+        config.model_providers.openrouter.insert(
             "default".to_string(),
             zeroclaw_config::schema::OpenRouterModelProviderConfig::default(),
         );

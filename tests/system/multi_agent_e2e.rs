@@ -103,7 +103,7 @@ async fn two_sqlite_agents_on_one_install_have_isolated_memory() {
     std::fs::create_dir_all(&cfg.workspace_dir).unwrap();
     cfg.risk_profiles
         .insert("default".into(), RiskProfileConfig::default());
-    cfg.providers.models.openrouter.insert(
+    cfg.model_providers.openrouter.insert(
         "default".to_string(),
         zeroclaw_config::schema::OpenRouterModelProviderConfig::default(),
     );

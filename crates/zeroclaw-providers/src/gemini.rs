@@ -477,7 +477,7 @@ impl GeminiModelProvider {
     /// Create a new Gemini model_provider.
     ///
     /// Authentication priority:
-    /// 1. Explicit API key passed in (from `[providers.models.gemini.<alias>]
+    /// 1. Explicit API key passed in (from `[model_providers.gemini.<alias>]
     ///    api_key`, reachable via the schema-mirror env grammar)
     /// 2. Gemini CLI OAuth tokens (`~/.gemini/oauth_creds.json`)
     pub fn new(api_key: Option<&str>) -> Self {
@@ -506,7 +506,7 @@ impl GeminiModelProvider {
     /// Create a new Gemini model_provider with managed OAuth from auth-profiles.json.
     ///
     /// Authentication priority:
-    /// 1. Explicit API key passed in (from `[providers.models.gemini.<alias>]`)
+    /// 1. Explicit API key passed in (from `[model_providers.gemini.<alias>]`)
     /// 2. Managed OAuth from auth-profiles.json (if auth_service provided)
     /// 3. Gemini CLI OAuth tokens (`~/.gemini/oauth_creds.json`)
     pub fn new_with_auth(

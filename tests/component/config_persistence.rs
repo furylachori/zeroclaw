@@ -18,7 +18,7 @@ fn config_default_has_expected_provider() {
     let config = Config::default();
     // Default config has no model_provider until configured
     assert!(
-        config.providers.models.is_empty() || !config.providers.models.is_empty(),
+        config.model_providers.is_empty() || !config.model_providers.is_empty(),
         "default config should be constructible"
     );
 }
@@ -29,12 +29,10 @@ fn config_default_has_expected_model() {
     // Default config has no model until configured
     assert!(
         config
-            .providers
             .first_model_provider()
             .and_then(|e| e.model.as_deref())
             .is_none()
             || config
-                .providers
                 .first_model_provider()
                 .and_then(|e| e.model.as_deref())
                 .is_some(),
@@ -46,7 +44,6 @@ fn config_default_has_expected_model() {
 fn config_default_temperature_positive() {
     let config = Config::default();
     let temp = config
-        .providers
         .first_model_provider()
         .and_then(|e| e.temperature)
         .unwrap_or(0.7);
@@ -134,7 +131,7 @@ fn memory_config_default_vector_keyword_weights_sum_to_one() {
 fn config_toml_roundtrip_preserves_provider() {
     use zeroclaw::config::{DeepseekModelProviderConfig, ModelProviderConfig};
     let mut config = Config::default();
-    config.providers.models.deepseek.insert(
+    config.model_providers.deepseek.insert(
         "default".to_string(),
         DeepseekModelProviderConfig {
             base: ModelProviderConfig {
@@ -149,20 +146,15 @@ fn config_toml_roundtrip_preserves_provider() {
     let parsed = zeroclaw::config::migration::migrate_to_current(&toml_str)
         .expect("TOML should round-trip through migration");
 
-    assert_eq!(
-        parsed.providers.first_model_provider_type(),
-        Some("deepseek")
-    );
+    assert_eq!(parsed.first_model_provider_type(), Some("deepseek"));
     assert_eq!(
         parsed
-            .providers
             .first_model_provider()
             .and_then(|e| e.model.as_deref()),
         Some("deepseek-chat")
     );
     assert!(
         (parsed
-            .providers
             .first_model_provider()
             .and_then(|e| e.temperature)
             .unwrap_or(0.7)
@@ -220,7 +212,7 @@ fn config_file_write_read_roundtrip() {
     let config_path = tmp.path().join("config.toml");
 
     let mut config = Config::default();
-    config.providers.models.mistral.insert(
+    config.model_providers.mistral.insert(
         "default".to_string(),
         MistralModelProviderConfig {
             base: ModelProviderConfig {
@@ -242,13 +234,9 @@ fn config_file_write_read_roundtrip() {
     let parsed = zeroclaw::config::migration::migrate_to_current(&read_back)
         .expect("TOML should round-trip through migration");
 
-    assert_eq!(
-        parsed.providers.first_model_provider_type(),
-        Some("mistral")
-    );
+    assert_eq!(parsed.first_model_provider_type(), Some("mistral"));
     assert_eq!(
         parsed
-            .providers
             .first_model_provider()
             .and_then(|e| e.model.as_deref()),
         Some("mistral-large")

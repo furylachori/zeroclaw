@@ -487,7 +487,6 @@ impl AcpServer {
     fn handle_initialize(&self, _params: &Value) -> RpcResult {
         let default_model = self
             .config
-            .providers
             .first_model_provider()
             .and_then(|e| e.model.clone());
 
@@ -1298,9 +1297,9 @@ mod tests {
         let cwd = tempfile::tempdir().unwrap();
         let mut config = Config {
             workspace_dir: cwd.path().to_path_buf(),
-            providers: {
-                let mut p = zeroclaw_config::providers::ProvidersConfig::default();
-                p.models.openrouter.insert(
+            model_providers: {
+                let mut m = zeroclaw_config::providers::ModelProviders::default();
+                m.openrouter.insert(
                     "default".to_string(),
                     zeroclaw_config::schema::OpenRouterModelProviderConfig {
                         base: zeroclaw_config::schema::ModelProviderConfig {
@@ -1309,7 +1308,7 @@ mod tests {
                         },
                     },
                 );
-                p
+                m
             },
             mcp: zeroclaw_config::schema::McpConfig {
                 enabled: true,
@@ -1443,7 +1442,7 @@ mod tests {
     fn handle_initialize_default_model_reflects_configured_provider() {
         use zeroclaw_config::schema::{ModelProviderConfig, OllamaModelProviderConfig};
         let mut config = Config::default();
-        config.providers.models.ollama.insert(
+        config.model_providers.ollama.insert(
             "default".to_string(),
             OllamaModelProviderConfig {
                 base: ModelProviderConfig {
@@ -1628,9 +1627,9 @@ mod tests {
         let cwd = tempfile::tempdir().unwrap();
         let mut config = Config {
             workspace_dir: cwd.path().to_path_buf(),
-            providers: {
-                let mut p = zeroclaw_config::providers::ProvidersConfig::default();
-                p.models.anthropic.insert(
+            model_providers: {
+                let mut m = zeroclaw_config::providers::ModelProviders::default();
+                m.anthropic.insert(
                     "default".to_string(),
                     zeroclaw_config::schema::AnthropicModelProviderConfig {
                         base: zeroclaw_config::schema::ModelProviderConfig {
@@ -1639,7 +1638,7 @@ mod tests {
                         },
                     },
                 );
-                p
+                m
             },
             ..Default::default()
         };
@@ -1703,7 +1702,7 @@ mod tests {
             workspace_dir: cwd.to_path_buf(),
             ..Default::default()
         };
-        cfg.providers.models.anthropic.insert(
+        cfg.model_providers.anthropic.insert(
             "default".to_string(),
             zeroclaw_config::schema::AnthropicModelProviderConfig {
                 base: zeroclaw_config::schema::ModelProviderConfig {

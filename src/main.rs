@@ -391,7 +391,7 @@ enum Commands {
         api_key: Option<String>,
 
         /// ModelProvider name. Used as the type key for the synthesized
-        /// `[providers.models.<type>.default]` entry.
+        /// `[model_providers.<type>.default]` entry.
         #[arg(long)]
         model_provider: Option<String>,
 
@@ -1543,47 +1543,37 @@ async fn main() -> Result<()> {
                 }
                 let final_temperature = temperature.unwrap_or_else(|| {
                     config
-                        .providers
                         .first_model_provider()
                         .and_then(|e| e.temperature)
                         .unwrap_or(0.7)
                 });
                 if let Some(p) = &model_provider {
                     // Upsert the requested model_provider type under "default" alias.
-                    let entry = config
-                        .providers
-                        .models
-                        .ensure(p, "default")
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "Unknown model_provider family: {p}. \
+                    let entry = config.model_providers.ensure(p, "default").ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Unknown model_provider family: {p}. \
                              Run `zeroclaw onboard model_providers` to see configured options."
-                            )
-                        })?;
+                        )
+                    })?;
                     if let Some(m) = &model {
                         entry.model = Some(m.clone());
                     }
                     entry.temperature = Some(final_temperature);
-                } else if config.providers.first_model_provider().is_none() {
+                } else if config.first_model_provider().is_none() {
                     anyhow::bail!(
                         "No model model_provider configured. Pass --model-provider <type> or run \
                          `zeroclaw onboard model_providers` to configure one."
                     );
                 }
 
-                let provider_name = config
-                    .providers
-                    .first_model_provider_type()
-                    .unwrap_or("openai");
+                let provider_name = config.first_model_provider_type().unwrap_or("openai");
                 let model_provider = zeroclaw::providers::create_model_provider(
                     provider_name,
                     config
-                        .providers
                         .first_model_provider()
                         .and_then(|e| e.api_key.as_deref()),
                 )?;
                 let model_name = config
-                    .providers
                     .first_model_provider()
                     .and_then(|e| e.model.as_deref())
                     .unwrap_or("default");
@@ -1664,7 +1654,6 @@ async fn main() -> Result<()> {
         } => {
             let final_temperature = temperature.unwrap_or_else(|| {
                 config
-                    .providers
                     .first_model_provider()
                     .and_then(|e| e.temperature)
                     .unwrap_or(0.7)
@@ -2030,15 +2019,11 @@ async fn main() -> Result<()> {
             println!();
             println!(
                 "🤖 ModelProvider:      {}",
-                config
-                    .providers
-                    .first_model_provider_type()
-                    .unwrap_or("openrouter")
+                config.first_model_provider_type().unwrap_or("openrouter")
             );
             println!(
                 "   Model:         {}",
                 config
-                    .providers
                     .first_model_provider()
                     .and_then(|e| e.model.as_deref())
                     .unwrap_or("(default)")
@@ -2197,7 +2182,6 @@ async fn main() -> Result<()> {
         Commands::Providers => {
             let model_providers = zeroclaw_providers::list_model_providers();
             let current = config
-                .providers
                 .first_model_provider_type()
                 .unwrap_or("openrouter")
                 .trim()
@@ -2215,8 +2199,8 @@ async fn main() -> Result<()> {
                 println!("  {:<19} {}{}{}", p.name, p.display_name, local_tag, marker);
             }
             println!(
-                "\n  Set [providers.models.custom.<alias>] uri = \"<URL>\" for any \
-                 OpenAI-compatible endpoint, or [providers.models.anthropic.<alias>] \
+                "\n  Set [model_providers.custom.<alias>] uri = \"<URL>\" for any \
+                 OpenAI-compatible endpoint, or [model_providers.anthropic.<alias>] \
                  uri = \"<URL>\" for an Anthropic-compatible endpoint."
             );
             Ok(())
@@ -3985,12 +3969,11 @@ mod tests {
     #[cfg(feature = "agent-runtime")]
     fn agent_uses_first_provider_temperature_when_unset() {
         // When the user doesn't pass --temperature, the kernel-only agent
-        // CLI walks `config.providers.first_model_provider().temperature` before
+        // CLI walks `config.first_model_provider().temperature` before
         // bottoming out at 0.7.
         let mut config = Config::default();
         config
-            .providers
-            .models
+            .model_providers
             .ensure("openai", "default")
             .expect("known family")
             .temperature = Some(1.5);
@@ -3998,7 +3981,6 @@ mod tests {
         let user_temperature: Option<f64> = std::hint::black_box(None);
         let final_temperature = user_temperature.unwrap_or_else(|| {
             config
-                .providers
                 .first_model_provider()
                 .and_then(|e| e.temperature)
                 .unwrap_or(0.7)
@@ -4017,7 +3999,6 @@ mod tests {
         let user_temperature: Option<f64> = std::hint::black_box(None);
         let final_temperature = user_temperature.unwrap_or_else(|| {
             config
-                .providers
                 .first_model_provider()
                 .and_then(|e| e.temperature)
                 .unwrap_or(0.7)

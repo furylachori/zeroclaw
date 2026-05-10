@@ -232,7 +232,7 @@ mod tests {
     async fn walker_resolves_typed_family_alias_default() {
         let _guard = super::env_test_lock().await;
         let _v = EnvVarGuard::set(
-            "ZEROCLAW_providers__models__anthropic__default__api_key",
+            "ZEROCLAW_model_providers__anthropic__default__api_key",
             "sk-ant-fixture",
         );
 
@@ -242,15 +242,14 @@ mod tests {
         assert!(
             applied
                 .paths
-                .contains("providers.models.anthropic.default.api-key"),
+                .contains("model_providers.anthropic.default.api-key"),
             "kebab-translated path should be recorded: {:?}",
             applied.paths,
         );
         // Secret field round-trips through set_prop into the typed alias.
         assert_eq!(
             config
-                .providers
-                .models
+                .model_providers
                 .anthropic
                 .get("default")
                 .and_then(|c| c.base.api_key.as_deref()),
@@ -262,11 +261,11 @@ mod tests {
     async fn walker_accepts_alias_with_underscore() {
         let _guard = super::env_test_lock().await;
         let _v1 = EnvVarGuard::set(
-            "ZEROCLAW_providers__models__openrouter__prod_v2__api_key",
+            "ZEROCLAW_model_providers__openrouter__prod_v2__api_key",
             "sk-or-fixture",
         );
         let _v2 = EnvVarGuard::set(
-            "ZEROCLAW_providers__models__openrouter__prod_v2__model",
+            "ZEROCLAW_model_providers__openrouter__prod_v2__model",
             "anthropic/claude-sonnet-4-6",
         );
 
@@ -276,16 +275,15 @@ mod tests {
         assert!(
             applied
                 .paths
-                .contains("providers.models.openrouter.prod_v2.api-key"),
+                .contains("model_providers.openrouter.prod_v2.api-key"),
         );
         assert!(
             applied
                 .paths
-                .contains("providers.models.openrouter.prod_v2.model"),
+                .contains("model_providers.openrouter.prod_v2.model"),
         );
         let entry = config
-            .providers
-            .models
+            .model_providers
             .openrouter
             .get("prod_v2")
             .expect("alias created");
@@ -330,7 +328,7 @@ mod tests {
         // the prefilter, and the failure must surface as the validator's
         // specific message — not a generic "Unknown property".
         let _v = EnvVarGuard::set(
-            "ZEROCLAW_providers__models__anthropic___invalid__api_key",
+            "ZEROCLAW_model_providers__anthropic___invalid__api_key",
             "x",
         );
 
@@ -368,7 +366,7 @@ mod tests {
     async fn mask_restores_pre_override_plaintext_for_secret() {
         let _guard = super::env_test_lock().await;
         let _v = EnvVarGuard::set(
-            "ZEROCLAW_providers__models__anthropic__default__api_key",
+            "ZEROCLAW_model_providers__anthropic__default__api_key",
             "sk-ant-from-env",
         );
 
@@ -376,8 +374,7 @@ mod tests {
         // after `Config::load_or_init` calls `decrypt_secrets`).
         let mut config = Config::default();
         config
-            .providers
-            .models
+            .model_providers
             .ensure("anthropic", "default")
             .expect("typed slot")
             .api_key = Some("sk-ant-on-disk".to_string());
@@ -386,13 +383,12 @@ mod tests {
         assert!(
             applied
                 .paths
-                .contains("providers.models.anthropic.default.api-key"),
+                .contains("model_providers.anthropic.default.api-key"),
         );
         // Env value is live in memory.
         assert_eq!(
             config
-                .providers
-                .models
+                .model_providers
                 .anthropic
                 .get("default")
                 .and_then(|c| c.base.api_key.as_deref()),
@@ -406,8 +402,7 @@ mod tests {
         mask_env_overrides_for_save(&mut to_save, &applied.snapshots).expect("mask succeeds");
         assert_eq!(
             to_save
-                .providers
-                .models
+                .model_providers
                 .anthropic
                 .get("default")
                 .and_then(|c| c.base.api_key.as_deref()),
@@ -416,8 +411,7 @@ mod tests {
         );
         assert_ne!(
             to_save
-                .providers
-                .models
+                .model_providers
                 .anthropic
                 .get("default")
                 .and_then(|c| c.base.api_key.as_deref()),

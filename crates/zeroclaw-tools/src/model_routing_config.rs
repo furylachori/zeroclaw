@@ -226,7 +226,7 @@ impl ModelRoutingConfigTool {
     }
 
     fn snapshot(cfg: &Config) -> Value {
-        let mut routes = cfg.providers.model_routes.clone();
+        let mut routes = cfg.model_routes.clone();
         routes.sort_by(|a, b| a.hint.cmp(&b.hint));
 
         let mut rules = cfg.query_classification.rules.clone();
@@ -277,9 +277,9 @@ impl ModelRoutingConfigTool {
 
         json!({
             "default": {
-                "model_provider": cfg.providers.first_model_provider_type(),
-                "model": cfg.providers.first_model_provider().and_then(|e| e.model.as_deref()),
-                "temperature": cfg.providers.first_model_provider().and_then(|e| e.temperature).unwrap_or(0.7),
+                "model_provider": cfg.first_model_provider_type(),
+                "model": cfg.first_model_provider().and_then(|e| e.model.as_deref()),
+                "temperature": cfg.first_model_provider().and_then(|e| e.temperature).unwrap_or(0.7),
             },
             "query_classification": {
                 "enabled": cfg.query_classification.enabled,
@@ -329,12 +329,8 @@ impl ModelRoutingConfigTool {
 
     fn handle_list_hints(&self) -> anyhow::Result<ToolResult> {
         let cfg = self.load_config_without_env()?;
-        let mut route_hints: Vec<String> = cfg
-            .providers
-            .model_routes
-            .iter()
-            .map(|r| r.hint.clone())
-            .collect();
+        let mut route_hints: Vec<String> =
+            cfg.model_routes.iter().map(|r| r.hint.clone()).collect();
         route_hints.sort();
         route_hints.dedup();
 
@@ -394,7 +390,7 @@ impl ModelRoutingConfigTool {
         let mut cfg = self.load_config_without_env()?;
 
         // Capture previous first-provider entry for rollback on probe failure.
-        let previous_first_model_provider = cfg.providers.first_model_provider().cloned();
+        let previous_first_model_provider = cfg.first_model_provider().cloned();
 
         // Determine which models entry to update.
         let (type_k, alias_k) = match &provider_update {
@@ -404,8 +400,7 @@ impl ModelRoutingConfigTool {
                 .unwrap_or_else(|| (model_provider.clone(), "default".to_string())),
             MaybeSet::Null | MaybeSet::Unset => {
                 // Update whichever entry is already first, or create a placeholder.
-                cfg.providers
-                    .models
+                cfg.model_providers
                     .iter_entries()
                     .next()
                     .map(|(t, a, _)| (t.to_string(), a.to_string()))
@@ -413,8 +408,7 @@ impl ModelRoutingConfigTool {
             }
         };
         let entry = cfg
-            .providers
-            .models
+            .model_providers
             .ensure(&type_k, &alias_k)
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -445,10 +439,7 @@ impl ModelRoutingConfigTool {
 
         // Probe the new model with a minimal API call to catch invalid model IDs
         // before the channel hot-reload picks up the change.
-        let current_model = cfg
-            .providers
-            .first_model_provider()
-            .and_then(|e| e.model.clone());
+        let current_model = cfg.first_model_provider().and_then(|e| e.model.clone());
         let provider_name = format!("{type_k}.{alias_k}");
         if let Some(model_name) = current_model
             && let Err(probe_err) = self.probe_model(&provider_name, &model_name).await
@@ -466,7 +457,7 @@ impl ModelRoutingConfigTool {
                 // restore cycle because we only ever mutated baseline fields
                 // (model, temperature, api_key) above.
                 if let Some(prev_entry) = previous_first_model_provider
-                    && let Some(slot) = cfg.providers.models.ensure(&type_k, &alias_k)
+                    && let Some(slot) = cfg.model_providers.ensure(&type_k, &alias_k)
                 {
                     *slot = prev_entry;
                 }
@@ -507,7 +498,6 @@ impl ModelRoutingConfigTool {
         // not the on-disk config (which may have no key at all).
         let api_key = self
             .config
-            .providers
             .first_model_provider()
             .and_then(|e| e.api_key.as_deref());
         if api_key.is_none_or(|k| k.trim().is_empty()) {
@@ -518,7 +508,6 @@ impl ModelRoutingConfigTool {
             provider_name,
             api_key,
             self.config
-                .providers
                 .first_model_provider()
                 .and_then(|e| e.uri.as_deref()),
         ) {
@@ -571,7 +560,6 @@ impl ModelRoutingConfigTool {
         let mut cfg = self.load_config_without_env()?;
 
         let existing_route = cfg
-            .providers
             .model_routes
             .iter()
             .find(|route| route.hint == hint)
@@ -594,11 +582,9 @@ impl ModelRoutingConfigTool {
             MaybeSet::Unset => {}
         }
 
-        cfg.providers
-            .model_routes
-            .retain(|route| route.hint != hint);
-        cfg.providers.model_routes.push(next_route);
-        Self::normalize_and_sort_routes(&mut cfg.providers.model_routes);
+        cfg.model_routes.retain(|route| route.hint != hint);
+        cfg.model_routes.push(next_route);
+        Self::normalize_and_sort_routes(&mut cfg.model_routes);
 
         if should_touch_rule {
             if matches!(classification_enabled, Some(false)) {
@@ -685,11 +671,9 @@ impl ModelRoutingConfigTool {
 
         let mut cfg = self.load_config_without_env()?;
 
-        let before_routes = cfg.providers.model_routes.len();
-        cfg.providers
-            .model_routes
-            .retain(|route| route.hint != hint);
-        let routes_removed = before_routes.saturating_sub(cfg.providers.model_routes.len());
+        let before_routes = cfg.model_routes.len();
+        cfg.model_routes.retain(|route| route.hint != hint);
+        let routes_removed = before_routes.saturating_sub(cfg.model_routes.len());
 
         let mut rules_removed = 0usize;
         if remove_classification {
@@ -704,7 +688,7 @@ impl ModelRoutingConfigTool {
             anyhow::bail!("No scenario found for hint '{hint}'");
         }
 
-        Self::normalize_and_sort_routes(&mut cfg.providers.model_routes);
+        Self::normalize_and_sort_routes(&mut cfg.model_routes);
         Self::normalize_and_sort_rules(&mut cfg.query_classification.rules);
         cfg.query_classification.enabled = !cfg.query_classification.rules.is_empty();
 
@@ -749,8 +733,7 @@ impl ModelRoutingConfigTool {
         let agent_model_provider_ref = format!("{model_provider_family}.{name}");
         {
             let provider_entry =
-                cfg.providers
-                    .models
+                cfg.model_providers
                     .ensure(&model_provider_family, &name)
                     .ok_or_else(|| {
                         anyhow::anyhow!(
@@ -1158,7 +1141,7 @@ mod tests {
         let get_result = tool.execute(json!({"action": "get"})).await.unwrap();
         let output: Value = serde_json::from_str(&get_result.output).unwrap();
         // V3 surfaces the dotted alias ref on the agent. The actual model
-        // string lives under providers.models.openai.coder (synthesized
+        // string lives under model_providers.openai.coder (synthesized
         // from the `model` upsert arg).
         assert_eq!(
             output["agents"]["coder"]["model_provider"],

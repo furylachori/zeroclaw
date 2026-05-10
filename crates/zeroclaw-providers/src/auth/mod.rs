@@ -253,7 +253,7 @@ impl AuthService {
     /// Get a valid Gemini OAuth access token, refreshing if necessary.
     ///
     /// `client_id` and `client_secret` are the OAuth app credentials from
-    /// the per-alias `[providers.models.gemini.<alias>]` typed config —
+    /// the per-alias `[model_providers.gemini.<alias>]` typed config —
     /// required when a refresh is triggered. Required when the cached
     /// access token is near expiry; ignored when the access token is
     /// still valid. Pass empty strings only if the caller is certain
@@ -972,12 +972,12 @@ pub struct GeminiFlow;
 impl GeminiFlow {
     /// Look up the per-alias OAuth client credentials. The auth profile
     /// name doubles as the Gemini family alias key
-    /// (`[providers.models.gemini.<profile>]`); the alias config carries
+    /// (`[model_providers.gemini.<profile>]`); the alias config carries
     /// the operator's Google Cloud OAuth app credentials.
     fn alias_creds<'a>(config: &'a Config, profile: &str) -> Result<(&'a str, &'a str)> {
-        let alias_cfg = config.providers.models.gemini.get(profile).ok_or_else(|| {
+        let alias_cfg = config.model_providers.gemini.get(profile).ok_or_else(|| {
             anyhow::anyhow!(
-                "Gemini OAuth requires `[providers.models.gemini.{profile}]` to exist with \
+                "Gemini OAuth requires `[model_providers.gemini.{profile}]` to exist with \
                  `oauth_client_id` and `oauth_client_secret` set. Register a Google Cloud \
                  OAuth app and configure the credentials before running this auth flow.",
             )
@@ -989,7 +989,7 @@ impl GeminiFlow {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Gemini OAuth requires `oauth_client_id` on `[providers.models.gemini.{profile}]`.",
+                    "Gemini OAuth requires `oauth_client_id` on `[model_providers.gemini.{profile}]`.",
                 )
             })?;
         let client_secret = alias_cfg
@@ -999,7 +999,7 @@ impl GeminiFlow {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Gemini OAuth requires `oauth_client_secret` on `[providers.models.gemini.{profile}]`.",
+                    "Gemini OAuth requires `oauth_client_secret` on `[model_providers.gemini.{profile}]`.",
                 )
             })?;
         Ok((client_id, client_secret))
@@ -1168,7 +1168,7 @@ impl AuthProviderFlow for GeminiFlow {
         profile_override: Option<&str>,
     ) -> Result<RefreshStatus> {
         let alias_name = profile_override.unwrap_or("default");
-        let alias_cfg = ctx.config.providers.models.gemini.get(alias_name);
+        let alias_cfg = ctx.config.model_providers.gemini.get(alias_name);
         let client_id = alias_cfg
             .and_then(|c| c.oauth_client_id.as_deref())
             .unwrap_or("");

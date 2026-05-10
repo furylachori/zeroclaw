@@ -456,12 +456,10 @@ pub fn all_tools_with_runtime(
     // LLM task tool — always registered when a model_provider is configured
     {
         let llm_task_provider = root_config
-            .providers
             .first_model_provider_type()
             .unwrap_or("openrouter")
             .to_string();
         let llm_task_model = root_config
-            .providers
             .first_model_provider()
             .and_then(|e| e.model.clone())
             .unwrap_or_else(|| "openai/gpt-4o-mini".to_string());
@@ -472,12 +470,10 @@ pub fn all_tools_with_runtime(
             llm_task_provider,
             llm_task_model,
             root_config
-                .providers
                 .first_model_provider()
                 .and_then(|e| e.temperature)
                 .unwrap_or(0.7),
             root_config
-                .providers
                 .first_model_provider()
                 .and_then(|e| e.api_key.clone()),
             llm_task_runtime_options,
@@ -963,7 +959,7 @@ pub fn all_tools_with_runtime(
                 String,
                 std::collections::HashMap<String, zeroclaw_config::schema::ModelProviderConfig>,
             > = std::collections::HashMap::new();
-            for (t, a, base) in root_config.providers.models.iter_entries() {
+            for (t, a, base) in root_config.model_providers.iter_entries() {
                 m.entry(t.to_string())
                     .or_default()
                     .insert(a.to_string(), base.clone());
