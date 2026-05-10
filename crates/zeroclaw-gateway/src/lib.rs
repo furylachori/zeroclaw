@@ -82,29 +82,19 @@ pub const REQUEST_TIMEOUT_SECS: u64 = 30;
 /// realistic workloads to finish.
 pub const LONG_RUNNING_REQUEST_TIMEOUT_SECS: u64 = 600;
 
-/// Read gateway request timeout from `ZEROCLAW_GATEWAY_TIMEOUT_SECS` env var
-/// at runtime, falling back to [`REQUEST_TIMEOUT_SECS`].
-///
-/// Agentic workloads with tool use (web search, MCP tools, sub-agent
-/// delegation) regularly exceed 30 seconds. This allows operators to
-/// increase the timeout without recompiling.
-pub fn gateway_request_timeout_secs() -> u64 {
-    std::env::var("ZEROCLAW_GATEWAY_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(REQUEST_TIMEOUT_SECS)
+/// Gateway request timeout (seconds) for routes other than the long-running
+/// cron-trigger endpoint. Reads from typed config.
+pub fn gateway_request_timeout_secs(cfg: &zeroclaw_config::schema::GatewayConfig) -> u64 {
+    cfg.request_timeout_secs
 }
 
-/// Read manual cron-run request timeout from
-/// `ZEROCLAW_GATEWAY_LONG_RUNNING_REQUEST_TIMEOUT_SECS` at runtime, falling back to
-/// [`LONG_RUNNING_REQUEST_TIMEOUT_SECS`]. Long-running jobs (e.g. agent prompts that
-/// invoke tools) can comfortably exceed the 30s gateway-wide default, so the
-/// `/api/cron/{id}/run` route gets its own timeout layer.
-pub fn gateway_long_running_request_timeout_secs() -> u64 {
-    std::env::var("ZEROCLAW_GATEWAY_LONG_RUNNING_REQUEST_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(LONG_RUNNING_REQUEST_TIMEOUT_SECS)
+/// Manual cron-trigger request timeout (seconds), exempt from the
+/// gateway-wide [`gateway_request_timeout_secs`] limit so synchronous agent
+/// jobs can run to completion. Reads from typed config.
+pub fn gateway_long_running_request_timeout_secs(
+    cfg: &zeroclaw_config::schema::GatewayConfig,
+) -> u64 {
+    cfg.long_running_request_timeout_secs
 }
 /// Sliding window used by gateway rate limiting.
 pub const RATE_LIMIT_WINDOW_SECS: u64 = 60;
@@ -718,22 +708,18 @@ pub async fn run_gateway(
             ))
         });
 
-    // WhatsApp app secret for webhook signature verification
-    // Priority: environment variable > config file
-    let whatsapp_app_secret: Option<Arc<str>> = std::env::var("ZEROCLAW_WHATSAPP_APP_SECRET")
-        .ok()
-        .and_then(|secret| {
-            let secret = secret.trim();
-            (!secret.is_empty()).then(|| secret.to_owned())
-        })
-        .or_else(|| {
-            config.channels.whatsapp.values().next().and_then(|wa| {
-                wa.app_secret
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|secret| !secret.is_empty())
-                    .map(ToOwned::to_owned)
-            })
+    // WhatsApp app secret for webhook signature verification.
+    let whatsapp_app_secret: Option<Arc<str>> = config
+        .channels
+        .whatsapp
+        .values()
+        .next()
+        .and_then(|wa| {
+            wa.app_secret
+                .as_deref()
+                .map(str::trim)
+                .filter(|secret| !secret.is_empty())
+                .map(ToOwned::to_owned)
         })
         .map(Arc::from);
 
@@ -746,22 +732,18 @@ pub async fn run_gateway(
         ))
     });
 
-    // Linq signing secret for webhook signature verification
-    // Priority: environment variable > config file
-    let linq_signing_secret: Option<Arc<str>> = std::env::var("ZEROCLAW_LINQ_SIGNING_SECRET")
-        .ok()
-        .and_then(|secret| {
-            let secret = secret.trim();
-            (!secret.is_empty()).then(|| secret.to_owned())
-        })
-        .or_else(|| {
-            config.channels.linq.values().next().and_then(|lq| {
-                lq.signing_secret
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|secret| !secret.is_empty())
-                    .map(ToOwned::to_owned)
-            })
+    // Linq signing secret for webhook signature verification.
+    let linq_signing_secret: Option<Arc<str>> = config
+        .channels
+        .linq
+        .values()
+        .next()
+        .and_then(|lq| {
+            lq.signing_secret
+                .as_deref()
+                .map(str::trim)
+                .filter(|secret| !secret.is_empty())
+                .map(ToOwned::to_owned)
         })
         .map(Arc::from);
 
@@ -790,29 +772,19 @@ pub async fn run_gateway(
             ))
         });
 
-    // Nextcloud Talk webhook secret for signature verification
-    // Priority: environment variable > config file
-    let nextcloud_talk_webhook_secret: Option<Arc<str>> =
-        std::env::var("ZEROCLAW_NEXTCLOUD_TALK_WEBHOOK_SECRET")
-            .ok()
-            .and_then(|secret| {
-                let secret = secret.trim();
-                (!secret.is_empty()).then(|| secret.to_owned())
-            })
-            .or_else(|| {
-                config
-                    .channels
-                    .nextcloud_talk
-                    .get("default")
-                    .and_then(|nc| {
-                        nc.webhook_secret
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|secret| !secret.is_empty())
-                            .map(ToOwned::to_owned)
-                    })
-            })
-            .map(Arc::from);
+    // Nextcloud Talk webhook secret for signature verification.
+    let nextcloud_talk_webhook_secret: Option<Arc<str>> = config
+        .channels
+        .nextcloud_talk
+        .get("default")
+        .and_then(|nc| {
+            nc.webhook_secret
+                .as_deref()
+                .map(str::trim)
+                .filter(|secret| !secret.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .map(Arc::from);
 
     // Gmail Push channel (if configured and referenced by an enabled agent)
     let gmail_push_channel: Option<Arc<GmailPushChannel>> = {
@@ -1287,7 +1259,7 @@ pub async fn run_gateway(
         .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(gateway_request_timeout_secs()),
+            Duration::from_secs(gateway_request_timeout_secs(&config.gateway)),
         ));
 
     // Manual cron-trigger route lives on its own sub-router so it can opt out
@@ -1300,7 +1272,7 @@ pub async fn run_gateway(
         .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(gateway_long_running_request_timeout_secs()),
+            Duration::from_secs(gateway_long_running_request_timeout_secs(&config.gateway)),
         ));
 
     let inner = inner.merge(cron_run_router);
@@ -2521,7 +2493,7 @@ async fn handle_gmail_push_webhook(
     }
 
     // Authenticate the webhook request using a shared secret.
-    let secret = gmail_push.resolve_webhook_secret();
+    let secret = gmail_push.config.webhook_secret.clone();
     if !secret.is_empty() {
         let provided = headers
             .get(axum::http::header::AUTHORIZATION)
@@ -2787,11 +2759,10 @@ mod tests {
     }
 
     #[test]
-    fn gateway_timeout_falls_back_to_default() {
-        // When env var is not set, should return the default constant
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::remove_var("ZEROCLAW_GATEWAY_TIMEOUT_SECS") };
-        assert_eq!(gateway_request_timeout_secs(), 30);
+    fn gateway_timeout_uses_typed_config_default() {
+        // V0.8.0: env-var fallback eradicated; helper now reads from typed config.
+        let cfg = zeroclaw_config::schema::GatewayConfig::default();
+        assert_eq!(gateway_request_timeout_secs(&cfg), 30);
     }
 
     #[test]
@@ -2800,10 +2771,9 @@ mod tests {
     }
 
     #[test]
-    fn long_running_request_timeout_falls_back_to_default() {
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::remove_var("ZEROCLAW_GATEWAY_LONG_RUNNING_REQUEST_TIMEOUT_SECS") };
-        assert_eq!(gateway_long_running_request_timeout_secs(), 600);
+    fn long_running_request_timeout_uses_typed_config_default() {
+        let cfg = zeroclaw_config::schema::GatewayConfig::default();
+        assert_eq!(gateway_long_running_request_timeout_secs(&cfg), 600);
     }
 
     #[test]
