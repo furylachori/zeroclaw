@@ -390,15 +390,41 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                     // splits on the final field separator. On a hit the dispatch is
                     // forwarded to the value type's own get_prop / set_prop via its
                     // `configurable_prefix()`.
+                    // `prop_is_secret` is a static dispatch (no `&self`), so
+                    // there's no live HashMap to scan. Iterate every plausible
+                    // left-split of `rest` so the secret-marker path matches
+                    // any inner key shape the runtime might have. Longest
+                    // split tried first to keep dotted-URL keys winning over
+                    // their shorter siblings.
                     nested_prop_is_secret.push(quote! {
-                        if let Some((_hm_key, inner_name)) = crate::config::route_hashmap_path(
-                            name,
-                            Self::configurable_prefix(),
-                            #field_name_lit,
-                            <#value_ty>::configurable_prefix(),
-                        ) && <#value_ty>::prop_is_secret(&inner_name)
                         {
-                            return true;
+                            let key_prefix = if Self::configurable_prefix().is_empty() {
+                                #field_name_lit.to_string()
+                            } else {
+                                format!("{}.{}", Self::configurable_prefix(), #field_name_lit)
+                            };
+                            if let Some(rest) = name
+                                .strip_prefix(&key_prefix)
+                                .and_then(|s| s.strip_prefix('.'))
+                            {
+                                let inner_prefix = <#value_ty>::configurable_prefix();
+                                let mut splits: Vec<usize> = rest
+                                    .match_indices('.')
+                                    .map(|(i, _)| i)
+                                    .collect();
+                                splits.reverse();
+                                for split_at in splits {
+                                    let inner_suffix = &rest[split_at + 1..];
+                                    let inner_name = if inner_prefix.is_empty() {
+                                        inner_suffix.to_string()
+                                    } else {
+                                        format!("{inner_prefix}.{inner_suffix}")
+                                    };
+                                    if <#value_ty>::prop_is_secret(&inner_name) {
+                                        return true;
+                                    }
+                                }
+                            }
                         }
                     });
                     nested_get_prop.push(quote! {
@@ -407,6 +433,7 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                             Self::configurable_prefix(),
                             #field_name_lit,
                             <#value_ty>::configurable_prefix(),
+                            self.#field_ident.keys().map(String::as_str),
                         ) && let Some(inner) = self.#field_ident.get(hm_key)
                             && let Ok(val) = inner.get_prop(&inner_name)
                         {
@@ -419,10 +446,14 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                             Self::configurable_prefix(),
                             #field_name_lit,
                             <#value_ty>::configurable_prefix(),
-                        ) && let Some(inner) = self.#field_ident.get_mut(hm_key)
-                            && let Ok(()) = inner.set_prop(&inner_name, value_str)
-                        {
-                            return Ok(());
+                            self.#field_ident.keys().map(String::as_str),
+                        ) {
+                            let hm_key = hm_key.to_string();
+                            if let Some(inner) = self.#field_ident.get_mut(&hm_key)
+                                && let Ok(()) = inner.set_prop(&inner_name, value_str)
+                            {
+                                return Ok(());
+                            }
                         }
                     });
                 }
@@ -802,15 +833,41 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                     // `<my_prefix>.<field>.<key>.<inner_suffix>`; on a hit the
                     // dispatch is forwarded to the value type's own get_prop /
                     // set_prop via its `configurable_prefix()`.
+                    // `prop_is_secret` is a static dispatch (no `&self`), so
+                    // there's no live HashMap to scan. Iterate every plausible
+                    // left-split of `rest` so the secret-marker path matches
+                    // any inner key shape the runtime might have. Longest
+                    // split tried first to keep dotted-URL keys winning over
+                    // their shorter siblings.
                     nested_prop_is_secret.push(quote! {
-                        if let Some((_hm_key, inner_name)) = crate::config::route_hashmap_path(
-                            name,
-                            Self::configurable_prefix(),
-                            #field_name_lit,
-                            <#value_ty>::configurable_prefix(),
-                        ) && <#value_ty>::prop_is_secret(&inner_name)
                         {
-                            return true;
+                            let key_prefix = if Self::configurable_prefix().is_empty() {
+                                #field_name_lit.to_string()
+                            } else {
+                                format!("{}.{}", Self::configurable_prefix(), #field_name_lit)
+                            };
+                            if let Some(rest) = name
+                                .strip_prefix(&key_prefix)
+                                .and_then(|s| s.strip_prefix('.'))
+                            {
+                                let inner_prefix = <#value_ty>::configurable_prefix();
+                                let mut splits: Vec<usize> = rest
+                                    .match_indices('.')
+                                    .map(|(i, _)| i)
+                                    .collect();
+                                splits.reverse();
+                                for split_at in splits {
+                                    let inner_suffix = &rest[split_at + 1..];
+                                    let inner_name = if inner_prefix.is_empty() {
+                                        inner_suffix.to_string()
+                                    } else {
+                                        format!("{inner_prefix}.{inner_suffix}")
+                                    };
+                                    if <#value_ty>::prop_is_secret(&inner_name) {
+                                        return true;
+                                    }
+                                }
+                            }
                         }
                     });
                     nested_get_prop.push(quote! {
@@ -819,6 +876,7 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                             Self::configurable_prefix(),
                             #field_name_lit,
                             <#value_ty>::configurable_prefix(),
+                            self.#field_ident.keys().map(String::as_str),
                         ) && let Some(inner) = self.#field_ident.get(hm_key)
                             && let Ok(val) = inner.get_prop(&inner_name)
                         {
@@ -831,10 +889,14 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                             Self::configurable_prefix(),
                             #field_name_lit,
                             <#value_ty>::configurable_prefix(),
-                        ) && let Some(inner) = self.#field_ident.get_mut(hm_key)
-                            && let Ok(()) = inner.set_prop(&inner_name, value_str)
-                        {
-                            return Ok(());
+                            self.#field_ident.keys().map(String::as_str),
+                        ) {
+                            let hm_key = hm_key.to_string();
+                            if let Some(inner) = self.#field_ident.get_mut(&hm_key)
+                                && let Ok(()) = inner.set_prop(&inner_name, value_str)
+                            {
+                                return Ok(());
+                            }
                         }
                     });
 

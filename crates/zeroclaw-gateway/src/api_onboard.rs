@@ -155,10 +155,18 @@ pub struct SectionInfo {
     /// attribute that encodes the grouping declaratively.
     pub group: String,
     /// `true` when this section is part of the `/onboard` wizard
-    /// (`zeroclaw_config::onboarding::ONBOARDING_WIZARD_SECTIONS`). Frontends
+    /// (`zeroclaw_config::onboarding::ONBOARDING_WIZARD`). Frontends
     /// filter on this flag so the wizard's section list is server-derived
     /// rather than duplicated on every client.
     pub is_onboarding: bool,
+    /// Editor shape (direct form / one-tier alias map / typed-family map /
+    /// backend picker). Server-emitted from
+    /// `zeroclaw_config::onboarding::Section::shape()`; both the
+    /// dashboard explorer and the onboard wizard dispatch their renderer
+    /// off this flag so identical sections render identically.
+    /// `None` for sections that aren't part of the canonical wizard.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shape: Option<zeroclaw_config::onboarding::SectionShape>,
 }
 
 #[derive(Debug, Serialize)]
@@ -321,8 +329,8 @@ pub async fn handle_sections(State(state): State<AppState>, headers: HeaderMap) 
     // but are part of the wizard flow (personality lives as markdown
     // files, not TOML). Inject so the canonical-order sort places them
     // correctly and frontends don't need to know which ones to splice.
-    for key in zeroclaw_config::onboarding::ONBOARDING_WIZARD_SECTIONS {
-        roots.insert((*key).to_string());
+    for s in zeroclaw_config::onboarding::ONBOARDING_WIZARD {
+        roots.insert(s.as_str().to_string());
     }
 
     // Sort: onboarding-wizard sections first in their canonical order
@@ -333,8 +341,8 @@ pub async fn handle_sections(State(state): State<AppState>, headers: HeaderMap) 
     let mut ordered: Vec<String> = roots.into_iter().collect();
     ordered.sort_by(|a, b| {
         match (
-            zeroclaw_config::onboarding::onboarding_section_index(a),
-            zeroclaw_config::onboarding::onboarding_section_index(b),
+            zeroclaw_config::onboarding::wizard_index_for_key(a),
+            zeroclaw_config::onboarding::wizard_index_for_key(b),
         ) {
             (Some(ai), Some(bi)) => ai.cmp(&bi),
             (Some(_), None) => std::cmp::Ordering::Less,
@@ -346,15 +354,28 @@ pub async fn handle_sections(State(state): State<AppState>, headers: HeaderMap) 
     let sections: Vec<SectionInfo> = ordered
         .into_iter()
         .map(|key| {
-            let has_picker = SECTIONS_WITH_PICKER.contains(&key.as_str())
-                || map_keyed_roots.contains(key.as_str());
+            // Picker eligibility = anything `handle_section_picker`
+            // dispatches non-trivially. Wizard sections that opt out
+            // (workspace/hardware/personality) are direct-form. Map-keyed
+            // sections outside the wizard (multi-agent peer groups, etc.)
+            // get the generic schema-walk picker.
+            let wizard = zeroclaw_config::onboarding::Section::from_key(&key);
+            let has_picker = match wizard {
+                Some(w) => !matches!(
+                    w,
+                    zeroclaw_config::onboarding::Section::Workspace
+                        | zeroclaw_config::onboarding::Section::Hardware
+                ),
+                None => map_keyed_roots.contains(key.as_str()),
+            };
             SectionInfo {
                 completed: completed.contains(&key),
                 label: humanize_section(&key),
                 help: section_help(&key).to_string(),
                 has_picker,
                 group: section_group(&key).to_string(),
-                is_onboarding: zeroclaw_config::onboarding::is_onboarding_section(&key),
+                is_onboarding: wizard.is_some(),
+                shape: wizard.map(zeroclaw_config::onboarding::Section::shape),
                 key,
             }
         })
@@ -366,19 +387,6 @@ pub async fn handle_sections(State(state): State<AppState>, headers: HeaderMap) 
 /// Top-level fields that exist on `Config` but are never user-editable
 /// from the dashboard (schema bookkeeping, resolved at runtime).
 const HIDDEN_TOP_LEVEL: &[&str] = &["schema-version", "onboard-state"];
-
-/// Sections whose picker semantics are non-generic and live in the
-/// per-section dispatch in `handle_section_picker` (catalog of model_providers,
-/// memory backend list, tunnel-with-none, channel sub-table walk).
-const SECTIONS_WITH_PICKER: &[&str] = &[
-    "model_providers",
-    "tts_providers",
-    "transcription_providers",
-    "channels",
-    "memory",
-    "tunnel",
-    "agents",
-];
 
 /// Humanize a section key for display (`google_workspace` → `Google workspace`).
 /// Keeps things simple and predictable; specific wording overrides go in
@@ -443,32 +451,15 @@ fn section_group(key: &str) -> &'static str {
 }
 
 /// Help text for a section. Curated copy for the onboarding sections;
-/// empty string for everything else (the form's title is enough until
-/// someone writes copy).
+/// Per-section help text. Single source of truth lives on
+/// [`Section::help`] in `zeroclaw-config` so CLI / TUI / gateway
+/// all render the same copy without parallel hand-curated tables. Non-
+/// wizard sections (gateway, observability, ...) return an empty string;
+/// the form's title is enough there.
 fn section_help(key: &str) -> &'static str {
-    match key {
-        "model_providers" => {
-            "Paste an API key (e.g. `sk-ant-...` for Anthropic, `sk-...` for OpenAI) when prompted. \
-                        For OAuth-based model_providers run: zeroclaw auth login --model-provider <name>"
-        }
-        "channels" => {
-            "Pick which chat platforms ZeroClaw should listen on. You can configure multiple."
-        }
-        "memory" => "Persistent memory backend. SQLite is recommended; pick `none` to disable.",
-        "hardware" => {
-            "Optional: hardware peripherals (Arduino, STM32, GPIO, etc.). Skip if you don't need them."
-        }
-        "tunnel" => {
-            "Optional: expose your gateway over the public internet via Cloudflare or ngrok. \
-                     Pick `none` to keep it localhost-only."
-        }
-        "agents" => {
-            "An agent binds a model model_provider, profiles, bundles, and channels into one \
-                     dispatchable unit. Add one per persona; reuse the same alias across channels \
-                     to share state."
-        }
-        _ => "",
-    }
+    zeroclaw_config::onboarding::Section::from_key(key)
+        .map(zeroclaw_config::onboarding::Section::help)
+        .unwrap_or("")
 }
 
 #[derive(Debug, Deserialize)]
@@ -526,32 +517,43 @@ pub async fn handle_section_picker(
     }
     let cfg = state.config.lock().clone();
 
-    let (items, help) = match section.as_str() {
-        "model_providers" => (
-            providers_picker(&cfg),
-            section_help("model_providers").to_string(),
-        ),
-        "memory" => (memory_picker(&cfg), section_help("memory").to_string()),
-        "channels" => (
-            schema_walk_picker(&cfg, "channels"),
-            section_help("channels").to_string(),
-        ),
-        "tunnel" => (
-            schema_walk_picker_with_none(&cfg, "tunnel", "tunnel.model_provider"),
-            section_help("tunnel").to_string(),
-        ),
-        "agents" => (agents_picker(&cfg), section_help("agents").to_string()),
-        other => {
+    use zeroclaw_config::onboarding::Section;
+    let Some(section_enum) = Section::from_key(&section) else {
+        return error_response(
+            ConfigApiError::new(
+                ConfigApiCode::PathNotFound,
+                format!(
+                    "section `{section}` has no picker; render its fields \
+                     via GET /api/config/list?prefix={section}"
+                ),
+            )
+            .with_path(section.as_str()),
+        );
+    };
+    let help = section_help(section_enum.as_str()).to_string();
+    let items = match section_enum {
+        Section::ModelProviders => providers_picker(&cfg),
+        // TTS / transcription share the typed-family two-tier shape. Each
+        // family enumerates its picker via `schema_walk_picker(<family>)`
+        // — the same machinery channels uses, so no per-section catalog
+        // table to drift.
+        Section::TtsProviders | Section::TranscriptionProviders => {
+            schema_walk_picker(&cfg, section_enum.as_str())
+        }
+        Section::Memory => memory_picker(&cfg),
+        Section::Channels => schema_walk_picker(&cfg, "channels"),
+        Section::Tunnel => schema_walk_picker_with_none(&cfg, "tunnel", "tunnel.model_provider"),
+        Section::Agents => agents_picker(&cfg),
+        Section::Workspace | Section::Hardware => {
             return error_response(
                 ConfigApiError::new(
                     ConfigApiCode::PathNotFound,
                     format!(
-                        "no picker for section `{other}`; \
-                         hardware is a direct-form section \
-                         (use GET /api/config/list?prefix=<section>)"
+                        "section `{section_enum}` is a direct-form section with no picker; \
+                         render fields via GET /api/config/list?prefix={section_enum}"
                     ),
                 )
-                .with_path(other),
+                .with_path(section_enum.as_str()),
             );
         }
     };
@@ -761,30 +763,34 @@ pub async fn handle_section_select(
 
     let mut working = state.config.lock().clone();
 
-    let (fields_prefix, created) = match section.as_str() {
-        "model_providers" => {
-            // Arm 1: create the outer type bucket if it doesn't exist yet.
-            if let Err(msg) = working.create_map_key("providers.models", &key) {
-                return error_response(
-                    ConfigApiError::new(
-                        ConfigApiCode::PathNotFound,
-                        format!("could not select model_provider `{key}`: {msg}"),
-                    )
-                    .with_path("providers.models"),
-                );
-            }
-            // Arm 2: create the named alias entry inside the type bucket.
+    use zeroclaw_config::onboarding::Section;
+    let Some(section_enum) = Section::from_key(&section) else {
+        return error_response(
+            ConfigApiError::new(
+                ConfigApiCode::PathNotFound,
+                format!("no picker semantics defined for section `{section}`"),
+            )
+            .with_path(section.as_str()),
+        );
+    };
+
+    let (fields_prefix, created) = match section_enum {
+        Section::ModelProviders | Section::TtsProviders | Section::TranscriptionProviders => {
+            // Two-tier typed-family path: outer bucket is the family
+            // (`model_providers.<type>` etc.), inner key is the alias the
+            // operator named. `create_map_key` is idempotent so re-selecting
+            // an existing type/alias is a no-op for the bucket and just
+            // returns the form prefix for the alias.
+            let family = section_enum.as_str();
             let created = working
-                .create_map_key(&format!("model_providers.{key}"), &alias)
+                .create_map_key(&format!("{family}.{key}"), &alias)
                 .map_err(|msg| {
                     error_response(
                         ConfigApiError::new(
                             ConfigApiCode::PathNotFound,
-                            format!(
-                                "could not select model_provider `{key}` alias `{alias}`: {msg}"
-                            ),
+                            format!("could not select {family} `{key}` alias `{alias}`: {msg}"),
                         )
-                        .with_path(format!("model_providers.{key}")),
+                        .with_path(format!("{family}.{key}")),
                     )
                 });
             let created = match created {
@@ -792,13 +798,10 @@ pub async fn handle_section_select(
                 Err(resp) => return resp,
             };
             // Per-family typed configs derive their own default endpoint
-            // URI via the `ModelEndpoint` trait at runtime construction time
-            // (#6273). The pre-Phase-6 trait-defaults pre-population walk is
-            // gone — operators get the typed config's `Default::default()`
-            // shape and override individual fields through the form.
-            (format!("model_providers.{key}.{alias}"), created)
+            // URI via family traits at runtime construction time.
+            (format!("{family}.{key}.{alias}"), created)
         }
-        "channels" => {
+        Section::Channels => {
             let created = working
                 .create_map_key(&format!("channels.{key}"), &alias)
                 .map_err(|msg| {
@@ -814,10 +817,9 @@ pub async fn handle_section_select(
                 Ok(c) => c,
                 Err(resp) => return resp,
             };
-            let prefix = format!("channels.{key}.{alias}");
-            (prefix, created)
+            (format!("channels.{key}.{alias}"), created)
         }
-        "agents" => {
+        Section::Agents => {
             // Agents are flat (one level): the URL path key IS the alias.
             // create_map_key is idempotent, so selecting an existing alias
             // just returns the form prefix without modifying anything.
@@ -836,7 +838,7 @@ pub async fn handle_section_select(
             };
             (format!("agents.{key}"), created)
         }
-        "memory" => {
+        Section::Memory => {
             // Set memory.backend to the picked key. Fields_prefix points at
             // `memory` so the form renders the whole memory section
             // (the active backend's specific fields show up there).
@@ -851,7 +853,7 @@ pub async fn handle_section_select(
             }
             ("memory".to_string(), true)
         }
-        "tunnel" => {
+        Section::Tunnel => {
             if let Err(e) = working.set_prop("tunnel.model_provider", &key) {
                 return error_response(
                     ConfigApiError::new(
@@ -870,13 +872,17 @@ pub async fn handle_section_select(
             };
             (prefix, true)
         }
-        other => {
+        Section::Workspace | Section::Hardware => {
             return error_response(
                 ConfigApiError::new(
                     ConfigApiCode::PathNotFound,
-                    format!("no picker semantics defined for section `{other}`"),
+                    format!(
+                        "section `{}` is a direct-form section with no picker; \
+                         render fields via GET /api/config/list?prefix={}",
+                        section_enum, section_enum
+                    ),
                 )
-                .with_path(other),
+                .with_path(section_enum.as_str()),
             );
         }
     };

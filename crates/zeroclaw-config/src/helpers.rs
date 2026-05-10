@@ -9,24 +9,49 @@ use crate::traits::{PropFieldInfo, PropKind};
 ///
 /// HashMap keys are user-controlled and may contain dots, URLs, or hostnames
 /// (for example `model_providers.custom:https://example.invalid/v1.api-key`).
-/// Current map-keyed config sections expose leaf fields, so split from the
-/// right and preserve any dots inside the runtime key.
+/// Inner values may themselves be deeply nested (`AliasedAgentConfig` has
+/// `agent.thinking.<...>` subpaths), so neither left-splitting nor
+/// right-splitting works in isolation. Match against the actual present
+/// keys and pick the longest prefix that is followed by `.` — this
+/// correctly handles dotted keys *and* deep inner paths in one parse.
 ///
-/// Returns `None` when the path doesn't match, letting the derive's
-/// generated code fall through to the next nested field.
-pub fn route_hashmap_path<'a>(
+/// `keys` is an iterator over the live HashMap's keys (typically
+/// `self.<field>.keys().map(String::as_str)` from the derive). Returns
+/// `None` when the path doesn't match, letting the derive's generated
+/// code fall through to the next nested field.
+pub fn route_hashmap_path<'a, 'k, I>(
     name: &'a str,
     my_prefix: &str,
     field_name: &str,
     inner_prefix: &str,
-) -> Option<(&'a str, String)> {
+    keys: I,
+) -> Option<(&'a str, String)>
+where
+    I: IntoIterator<Item = &'k str>,
+{
     let key_prefix = if my_prefix.is_empty() {
         field_name.to_string()
     } else {
         format!("{my_prefix}.{field_name}")
     };
     let rest = name.strip_prefix(&key_prefix)?.strip_prefix('.')?;
-    let (hm_key, inner_suffix) = rest.rsplit_once('.')?;
+    // Longest-match against present map keys. Dotted keys (URL-shaped
+    // custom provider entries) sort longer than their unprefixed siblings,
+    // so this also disambiguates `custom:https://x` vs. `custom`.
+    let mut best: Option<(usize, &'a str)> = None;
+    for k in keys {
+        if let Some(_suffix) = rest.strip_prefix(k).and_then(|s| s.strip_prefix('.'))
+            && best.is_none_or(|(len, _)| k.len() > len)
+        {
+            // Slice the original `rest` so we can keep the lifetime tied
+            // to `name` rather than to a transient `&str` from the keys
+            // iterator.
+            let hm_key = &rest[..k.len()];
+            best = Some((k.len(), hm_key));
+        }
+    }
+    let (key_len, hm_key) = best?;
+    let inner_suffix = &rest[key_len + 1..];
     let inner_name = if inner_prefix.is_empty() {
         inner_suffix.to_string()
     } else {
@@ -343,6 +368,44 @@ pub fn validate_alias_key(key: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_hashmap_path_handles_deep_inner_paths() {
+        // Regression: AliasedAgentConfig has nested fields like
+        // `agent.thinking.<...>` (3+ segments under the alias key). The
+        // earlier rsplit-once parser would mis-route, yielding hm_key =
+        // "fake123.agent.thinking" instead of "fake123".
+        let keys = ["fake123"];
+        let got = route_hashmap_path(
+            "agents.fake123.agent.thinking.default-level",
+            "",
+            "agents",
+            "",
+            keys.iter().copied(),
+        );
+        assert_eq!(
+            got,
+            Some(("fake123", "agent.thinking.default-level".to_string()))
+        );
+    }
+
+    #[test]
+    fn route_hashmap_path_picks_longest_dotted_key() {
+        // Custom-URL keys may contain dots; the longest matching key
+        // wins so `custom:https://example/v1` is preferred over `custom`.
+        let keys = ["custom", "custom:https://example/v1"];
+        let got = route_hashmap_path(
+            "model_providers.custom:https://example/v1.api-key",
+            "",
+            "model_providers",
+            "",
+            keys.iter().copied(),
+        );
+        assert_eq!(
+            got,
+            Some(("custom:https://example/v1", "api-key".to_string()))
+        );
+    }
 
     #[test]
     fn parse_string_array_splits_on_comma() {

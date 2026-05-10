@@ -364,7 +364,7 @@ enum Commands {
     Onboard {
         /// Configure a specific section only. Omit to run the full flow.
         #[command(subcommand)]
-        section: Option<OnboardSection>,
+        section: Option<zeroclaw_config::onboarding::Section>,
 
         /// Skip interactive prompts; read from --api-key/--model-provider/--model/--memory.
         #[arg(long)]
@@ -853,25 +853,11 @@ Examples:
     },
 }
 
-/// Section selector for `zeroclaw onboard <section>`.
-#[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
-enum OnboardSection {
-    /// Model-provider selection, credentials, and live model picker.
-    #[command(name = "model_providers")]
-    ModelProviders,
-    /// Messaging channels (Telegram, Discord, Slack, Matrix, …).
-    Channels,
-    /// Memory backend (sqlite, lucid, markdown, none) + auto-save.
-    Memory,
-    /// Physical hardware transport (native GPIO, serial, probe).
-    Hardware,
-    /// Public tunnel model_provider (cloudflare, ngrok, tailscale, …).
-    Tunnel,
-    /// Edit the markdown files that shape your agent (SOUL, IDENTITY, USER, …).
-    Personality,
-    /// Define and configure agent aliases (channel bindings, model_provider, profiles).
-    Agents,
-}
+// `zeroclaw onboard <section>` parses its positional subcommand into
+// `zeroclaw_config::onboarding::Section` directly via clap's
+// `Subcommand` derive (gated on the `clap` feature there). No mirror
+// enum, no parallel variant list — the canonical `Section` enum IS
+// the clap surface.
 
 /// Stub enum that mirrors the old `props` subcommands so clap can still parse
 /// `zeroclaw props <anything>` and print a deprecation message.
@@ -881,6 +867,23 @@ enum DeprecatedPropsCommands {
     Any(Vec<String>),
 }
 
+/// Single source of truth for the retired `--*-only` boolean flags. Each
+/// row binds the legacy flag name, the new positional subcommand it
+/// became, and the canonical [`Section`] it routes to. The function
+/// below and its tests both walk this table — no magic positional
+/// bools, no parallel mapping.
+#[cfg(feature = "agent-runtime")]
+const LEGACY_ONBOARD_FLAGS: &[(zeroclaw_config::onboarding::Section, &str, &str)] = {
+    use zeroclaw_config::onboarding::Section;
+    &[
+        (Section::Channels, "--channels-only", "channels"),
+        (Section::ModelProviders, "--providers-only", "providers"),
+        (Section::Memory, "--memory-only", "memory"),
+        (Section::Hardware, "--hardware-only", "hardware"),
+        (Section::Tunnel, "--tunnel-only", "tunnel"),
+    ]
+};
+
 /// Resolve the onboard target from the positional `<section>` subcommand
 /// (if any) plus the legacy `--*-only` boolean flags. Returns the target
 /// section for the orchestrator plus an optional `(old_flag, new_subcommand)`
@@ -889,63 +892,29 @@ enum DeprecatedPropsCommands {
 /// Precedence: an explicit positional section always wins for target
 /// selection, even when a legacy flag is also set. The deprecation warning
 /// still fires in that case so the user learns the flag is retired.
+///
+/// `legacy_flags` parallels [`LEGACY_ONBOARD_FLAGS`] in order; the
+/// caller (clap entry point and tests) builds it once from the parsed
+/// CLI bools so the position-encoded mapping is no longer scattered.
 #[cfg(feature = "agent-runtime")]
-#[allow(
-    clippy::fn_params_excessive_bools,
-    reason = "Each bool maps 1:1 to a retired CLI flag; a struct would add call-site noise for a short-lived deprecation shim."
-)]
 fn resolve_onboard_target(
-    explicit: Option<OnboardSection>,
-    channels_only: bool,
-    providers_only: bool,
-    memory_only: bool,
-    hardware_only: bool,
-    tunnel_only: bool,
+    explicit: Option<zeroclaw_config::onboarding::Section>,
+    legacy_flags: &[bool],
 ) -> (
-    zeroclaw_runtime::onboard::Section,
+    zeroclaw_runtime::onboard::Target,
     Option<(&'static str, &'static str)>,
 ) {
-    use zeroclaw_runtime::onboard::Section;
-
-    let legacy = [
-        (
-            channels_only,
-            Section::Channels,
-            "--channels-only",
-            "channels",
-        ),
-        (
-            providers_only,
-            Section::ModelProviders,
-            "--providers-only",
-            "providers",
-        ),
-        (memory_only, Section::Memory, "--memory-only", "memory"),
-        (
-            hardware_only,
-            Section::Hardware,
-            "--hardware-only",
-            "hardware",
-        ),
-        (tunnel_only, Section::Tunnel, "--tunnel-only", "tunnel"),
-    ]
-    .into_iter()
-    .find(|(flag, ..)| *flag);
-
-    let explicit_section = explicit.map(|s| match s {
-        OnboardSection::ModelProviders => Section::ModelProviders,
-        OnboardSection::Channels => Section::Channels,
-        OnboardSection::Memory => Section::Memory,
-        OnboardSection::Hardware => Section::Hardware,
-        OnboardSection::Tunnel => Section::Tunnel,
-        OnboardSection::Personality => Section::Personality,
-        OnboardSection::Agents => Section::Agents,
-    });
-
-    let target = explicit_section
-        .or(legacy.map(|(_, s, _, _)| s))
-        .unwrap_or(Section::All);
-    let deprecation = legacy.map(|(_, _, old, new)| (old, new));
+    debug_assert_eq!(
+        legacy_flags.len(),
+        LEGACY_ONBOARD_FLAGS.len(),
+        "legacy_flags must align with LEGACY_ONBOARD_FLAGS",
+    );
+    let legacy = LEGACY_ONBOARD_FLAGS
+        .iter()
+        .zip(legacy_flags.iter().copied())
+        .find_map(|(row, active)| active.then_some(*row));
+    let target = explicit.or(legacy.map(|(s, ..)| s));
+    let deprecation = legacy.map(|(_, old, new)| (old, new));
     (target, deprecation)
 }
 
@@ -1404,11 +1373,16 @@ async fn main() -> Result<()> {
 
         let (target, deprecation) = resolve_onboard_target(
             *section,
-            *channels_only,
-            *providers_only,
-            *memory_only,
-            *hardware_only,
-            *tunnel_only,
+            // Order matches LEGACY_ONBOARD_FLAGS row order. Adding a
+            // legacy flag means: add a row to that const + a slot
+            // here, nowhere else.
+            &[
+                *channels_only,
+                *providers_only,
+                *memory_only,
+                *hardware_only,
+                *tunnel_only,
+            ],
         );
         if let Some((old, new)) = deprecation {
             eprintln!("warning: {old} is deprecated; use `zeroclaw onboard {new}` instead");
@@ -3757,17 +3731,16 @@ mod tests {
     #[test]
     #[cfg(feature = "agent-runtime")]
     fn onboard_cli_positional_sections_parse() {
-        for (arg, expected) in [
-            ("model_providers", OnboardSection::ModelProviders),
-            ("channels", OnboardSection::Channels),
-            ("memory", OnboardSection::Memory),
-            ("hardware", OnboardSection::Hardware),
-            ("tunnel", OnboardSection::Tunnel),
-        ] {
-            let cli = Cli::try_parse_from(["zeroclaw", "onboard", arg])
-                .unwrap_or_else(|_| panic!("onboard {arg} should parse"));
+        // Drive from the canonical const so adding a wizard section
+        // forces parser coverage here. clap subcommand names are the
+        // wizard's `as_str()` keys (snake_case) verbatim, set via
+        // `#[command(name = $key)]` inside the `sections!` macro that
+        // also defines the enum.
+        for w in zeroclaw_config::onboarding::ONBOARDING_WIZARD {
+            let cli = Cli::try_parse_from(["zeroclaw", "onboard", w.as_str()])
+                .unwrap_or_else(|_| panic!("onboard {} should parse", w.as_str()));
             match cli.command {
-                Commands::Onboard { section, .. } => assert_eq!(section, Some(expected)),
+                Commands::Onboard { section, .. } => assert_eq!(section, Some(*w)),
                 other => panic!("expected onboard command, got {other:?}"),
             }
         }
@@ -3776,9 +3749,9 @@ mod tests {
     #[test]
     #[cfg(feature = "agent-runtime")]
     fn resolve_onboard_target_no_explicit_no_legacy_runs_all() {
-        use zeroclaw_runtime::onboard::Section;
-        let (target, deprecation) = resolve_onboard_target(None, false, false, false, false, false);
-        assert_eq!(target, Section::All);
+        let none_set = vec![false; LEGACY_ONBOARD_FLAGS.len()];
+        let (target, deprecation) = resolve_onboard_target(None, &none_set);
+        assert_eq!(target, None);
         assert!(deprecation.is_none());
     }
 
@@ -3786,61 +3759,27 @@ mod tests {
     #[cfg(feature = "agent-runtime")]
     fn resolve_onboard_target_positional_wins_and_emits_no_warning() {
         use zeroclaw_runtime::onboard::Section;
-        let (target, deprecation) = resolve_onboard_target(
-            Some(OnboardSection::Channels),
-            false,
-            false,
-            false,
-            false,
-            false,
-        );
-        assert_eq!(target, Section::Channels);
+        let none_set = vec![false; LEGACY_ONBOARD_FLAGS.len()];
+        let (target, deprecation) = resolve_onboard_target(Some(Section::Channels), &none_set);
+        assert_eq!(target, Some(Section::Channels));
         assert!(deprecation.is_none());
     }
 
+    /// Drives directly off [`LEGACY_ONBOARD_FLAGS`] — every row in the
+    /// const generates one assertion. No magic positional bool array.
     #[test]
     #[cfg(feature = "agent-runtime")]
     fn resolve_onboard_target_legacy_flag_routes_and_warns() {
-        use zeroclaw_runtime::onboard::Section;
-        for (mut flags, expected_section, expected_old, expected_new) in [
-            (
-                [true, false, false, false, false],
-                Section::Channels,
-                "--channels-only",
-                "channels",
-            ),
-            (
-                [false, true, false, false, false],
-                Section::ModelProviders,
-                "--providers-only",
-                "providers",
-            ),
-            (
-                [false, false, true, false, false],
-                Section::Memory,
-                "--memory-only",
-                "memory",
-            ),
-            (
-                [false, false, false, true, false],
-                Section::Hardware,
-                "--hardware-only",
-                "hardware",
-            ),
-            (
-                [false, false, false, false, true],
-                Section::Tunnel,
-                "--tunnel-only",
-                "tunnel",
-            ),
-        ] {
-            let [channels, model_providers, memory, hardware, tunnel] = std::mem::take(&mut flags);
-            let (target, deprecation) =
-                resolve_onboard_target(None, channels, model_providers, memory, hardware, tunnel);
-            assert_eq!(target, expected_section, "{expected_old} target");
+        for (idx, (expected_section, expected_old, expected_new)) in
+            LEGACY_ONBOARD_FLAGS.iter().enumerate()
+        {
+            let mut flags = vec![false; LEGACY_ONBOARD_FLAGS.len()];
+            flags[idx] = true;
+            let (target, deprecation) = resolve_onboard_target(None, &flags);
+            assert_eq!(target, Some(*expected_section), "{expected_old} target");
             assert_eq!(
                 deprecation,
-                Some((expected_old, expected_new)),
+                Some((*expected_old, *expected_new)),
                 "{expected_old} deprecation pair",
             );
         }
@@ -3853,15 +3792,11 @@ mod tests {
     #[cfg(feature = "agent-runtime")]
     fn resolve_onboard_target_explicit_plus_legacy_warns_but_picks_explicit() {
         use zeroclaw_runtime::onboard::Section;
-        let (target, deprecation) = resolve_onboard_target(
-            Some(OnboardSection::ModelProviders),
-            true, // --channels-only
-            false,
-            false,
-            false,
-            false,
-        );
-        assert_eq!(target, Section::ModelProviders);
+        // Position 0 is --channels-only per LEGACY_ONBOARD_FLAGS row order.
+        let mut flags = vec![false; LEGACY_ONBOARD_FLAGS.len()];
+        flags[0] = true;
+        let (target, deprecation) = resolve_onboard_target(Some(Section::ModelProviders), &flags);
+        assert_eq!(target, Some(Section::ModelProviders));
         assert_eq!(deprecation, Some(("--channels-only", "channels")));
     }
 

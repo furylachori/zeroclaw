@@ -10,6 +10,7 @@ publish = false
 zeroclaw-api.workspace = true
 zeroclaw-macros.workspace = true
 anyhow = "1.0"
+clap = { version = "4.5", optional = true, default-features = false, features = ["std", "derive"] }
 # OnboardUi needs dyn-compat; native AFIT isn't dyn-safe. Already built for api/channels/runtime.
 async-trait = "0.1"
 chacha20poly1305 = "0.10"
@@ -47,7 +48,8 @@ tempfile = "3.26"
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }
 
 [features]
-default = ["schema-export"]
+default = ["schema-export", "clap"]
 schema-export = ["dep:schemars"]
+clap = ["dep:clap"]
 channel-nostr = []
 voice-wake = []

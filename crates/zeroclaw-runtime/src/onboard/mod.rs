@@ -14,9 +14,6 @@ use serde::Deserialize;
 use zeroclaw_config::schema::Config;
 use zeroclaw_config::traits::{Answer, OnboardUi, PropKind, SelectItem};
 
-use crate::agent::personality::EDITABLE_PERSONALITY_FILES;
-use crate::agent::personality_templates::{TemplateContext, render as render_personality};
-
 const CUSTOM_OPENAI_COMPAT_LABEL: &str = "Custom OpenAI-compatible endpoint";
 const OPENAI_COMPAT_MODELS_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -52,60 +49,21 @@ struct OpenAiModel {
     id: String,
 }
 
-/// Which slice of onboarding to run. `All` runs every section in order.
-/// Each variant maps 1:1 to a key in
-/// `zeroclaw_config::onboarding::ONBOARDING_WIZARD_SECTIONS`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Section {
-    All,
-    ModelProviders,
-    TtsProviders,
-    TranscriptionProviders,
-    Channels,
-    Memory,
-    Hardware,
-    Tunnel,
-    Personality,
-    Agents,
-}
+pub use zeroclaw_config::onboarding::Section;
 
-impl Section {
-    /// Stable string name used in TOML paths and surfaced over the HTTP
-    /// CRUD API for grouping prop lists by section. `All` has no path
-    /// representation; returns `None`.
-    pub fn as_path_prefix(self) -> Option<&'static str> {
-        match self {
-            Self::All => None,
-            Self::ModelProviders => Some("model_providers"),
-            Self::TtsProviders => Some("tts_providers"),
-            Self::TranscriptionProviders => Some("transcription_providers"),
-            Self::Channels => Some("channels"),
-            Self::Memory => Some("memory"),
-            Self::Hardware => Some("hardware"),
-            Self::Tunnel => Some("tunnel"),
-            Self::Personality => Some("personality"),
-            Self::Agents => Some("agents"),
-        }
-    }
+/// What slice of onboarding the orchestrator should run. `None` walks
+/// the full wizard (every [`Section`] in canonical order); `Some(s)`
+/// targets one section. The runtime intentionally has no parallel
+/// `Section`-with-`All` enum — that was three drift surfaces in one
+/// file.
+pub type Target = Option<Section>;
 
-    /// Map a dotted property path back to its onboarding section by looking
-    /// at the path's first segment. Returns `None` for paths that don't fall
-    /// into any wizard section (e.g. `onboard_state.completed_sections`).
-    pub fn from_path(path: &str) -> Option<Self> {
-        let prefix = path.split('.').next()?;
-        match prefix {
-            "model_providers" => Some(Self::ModelProviders),
-            "tts_providers" => Some(Self::TtsProviders),
-            "transcription_providers" => Some(Self::TranscriptionProviders),
-            "channels" => Some(Self::Channels),
-            "memory" => Some(Self::Memory),
-            "hardware" => Some(Self::Hardware),
-            "tunnel" => Some(Self::Tunnel),
-            "personality" => Some(Self::Personality),
-            "agents" => Some(Self::Agents),
-            _ => None,
-        }
-    }
+/// First segment of a dotted property path mapped back to the wizard
+/// section it lives under, or `None` for non-wizard paths
+/// (`onboard_state.completed_sections`, etc.).
+#[must_use]
+pub fn section_for_path(path: &str) -> Option<Section> {
+    Section::from_key(path.split('.').next()?)
 }
 
 /// Runtime knobs sourced from CLI flags. `--quick`/`--tui` select the UI
@@ -123,56 +81,57 @@ pub struct Flags {
     pub memory: Option<String>,
 }
 
-/// Top-level onboard dispatcher.
+/// Top-level onboard dispatcher. `target` is the canonical
+/// `Option<Section>` from `zeroclaw_runtime::onboard::Target` —
+/// `None` walks the full wizard, `Some(s)` runs a single section.
 pub async fn run(
     cfg: &mut Config,
     ui: &mut dyn OnboardUi,
-    section: Section,
+    target: Target,
     flags: &Flags,
 ) -> Result<()> {
-    if let Section::All = section {
+    let Some(section) = target else {
         return run_all(cfg, ui, flags).await;
-    }
-    let key = section
-        .as_path_prefix()
-        .expect("non-All section has a path prefix");
-    let _ = dispatch_section(cfg, ui, flags, key).await?;
+    };
+    let _ = dispatch_section(cfg, ui, flags, section).await?;
     Ok(())
 }
 
-/// Run a single onboarding section by canonical key. Returns `Nav::Done`
-/// for sections without an interactive wizard (the user reaches them via
-/// the `/config` dashboard or `zeroclaw config set`); the run-all loop
-/// treats Done as "advance to the next section".
+/// Run a single onboarding section. Returns `Nav::Done` for sections
+/// without an interactive wizard (the operator reaches them via the
+/// `/config` dashboard or `zeroclaw config set`); the run-all loop
+/// treats Done as "advance to the next section". Exhaustive over
+/// [`Section`] so adding a variant to the canonical enum forces a
+/// match arm here.
 async fn dispatch_section(
     cfg: &mut Config,
     ui: &mut dyn OnboardUi,
     flags: &Flags,
-    key: &str,
+    section: Section,
 ) -> Result<Nav> {
-    match key {
-        "workspace" => Ok(Nav::Done),
-        "model_providers" => model_providers(cfg, ui, flags).await,
+    match section {
+        // The CLI wizard never had a workspace step; `Config::load_or_init`
+        // handles the install-dir bootstrap before onboarding runs.
+        Section::Workspace => Ok(Nav::Done),
+        Section::ModelProviders => model_providers(cfg, ui, flags).await,
         // TTS and transcription typed-family sections share the same
         // shape as model_providers but don't have an interactive wizard
         // yet — operators configure them via /config or `zeroclaw config
         // set tts_providers.<type>.<alias>.<field> ...`. Listing them
         // here keeps the wizard order matching the canonical const.
-        "tts_providers" | "transcription_providers" => {
+        Section::TtsProviders | Section::TranscriptionProviders => {
             ui.note(&format!(
-                "Skipping `{key}` (no interactive wizard yet). \
-                 Configure via the dashboard at /config/{key} or \
-                 `zeroclaw config set {key}.<type>.<alias>.<field> <value>`."
+                "Skipping `{section}` (no interactive wizard yet). \
+                 Configure via the dashboard at /config/{section} or \
+                 `zeroclaw config set {section}.<type>.<alias>.<field> <value>`."
             ));
             Ok(Nav::Done)
         }
-        "channels" => channels(cfg, ui, flags).await,
-        "memory" => memory(cfg, ui, flags).await,
-        "hardware" => hardware(cfg, ui, flags).await,
-        "tunnel" => tunnel(cfg, ui, flags).await,
-        "personality" => personality(cfg, ui, flags).await,
-        "agents" => agents(cfg, ui, flags).await,
-        _ => Ok(Nav::Done),
+        Section::Channels => channels(cfg, ui, flags).await,
+        Section::Memory => memory(cfg, ui, flags).await,
+        Section::Hardware => hardware(cfg, ui, flags).await,
+        Section::Tunnel => tunnel(cfg, ui, flags).await,
+        Section::Agents => agents(cfg, ui, flags).await,
     }
 }
 
@@ -182,22 +141,22 @@ async fn dispatch_section(
 /// onboarding cleanly (user bails out).
 async fn run_all(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Result<()> {
     // Walk the canonical wizard order from
-    // `zeroclaw_config::onboarding::ONBOARDING_WIZARD_SECTIONS` — the
+    // `zeroclaw_config::onboarding::ONBOARDING_WIZARD` — the
     // single source of truth shared with the gateway and the dashboard.
     // Skipping `workspace` here matches the previous behavior (the CLI
     // wizard never had a workspace step; Config::load_or_init handles
     // the install-dir bootstrap before onboarding runs).
-    let order: Vec<&str> = zeroclaw_config::onboarding::ONBOARDING_WIZARD_SECTIONS
+    let order: Vec<Section> = zeroclaw_config::onboarding::ONBOARDING_WIZARD
         .iter()
         .copied()
-        .filter(|k| *k != "workspace")
+        .filter(|w| *w != Section::Workspace)
         .collect();
     let mut i: usize = 0;
     loop {
-        let Some(key) = order.get(i) else {
+        let Some(section) = order.get(i).copied() else {
             return Ok(());
         };
-        match dispatch_section(cfg, ui, flags, key).await? {
+        match dispatch_section(cfg, ui, flags, section).await? {
             Nav::Done => i += 1,
             Nav::Back => {
                 if i == 0 {
@@ -217,6 +176,19 @@ async fn persist(cfg: &mut Config, path: &str, value: &str) -> Result<()> {
     cfg.set_prop(path, value)?;
     cfg.save().await?;
     Ok(())
+}
+
+/// Emit the section's heading + help blurb in the canonical layout.
+/// Help copy lives on `Section::help()` in `zeroclaw-config` so the
+/// CLI / TUI / dashboard render the same text without parallel tables.
+/// `display_label` lets per-section code keep its preferred title casing
+/// (the canonical key would otherwise be e.g. `model_providers`).
+fn emit_section_header(ui: &mut dyn OnboardUi, section: Section, display_label: &str) {
+    ui.heading(1, display_label);
+    let help = section.help();
+    if !help.is_empty() {
+        ui.note(help);
+    }
 }
 
 // ── Field-driven helpers ─────────────────────────────────────────────────
@@ -504,18 +476,19 @@ async fn skip_if_configured(
     cfg: &Config,
     ui: &mut dyn OnboardUi,
     flags: &Flags,
-    section_key: &str,
+    section: Section,
     label: &str,
     has_signal: bool,
 ) -> Result<SkipNav> {
     if flags.force {
         return Ok(SkipNav::Enter);
     }
+    let key = section.as_str();
     let seen = cfg
         .onboard_state
         .completed_sections
         .iter()
-        .any(|s| s == section_key);
+        .any(|s| s == key);
     if !seen && !has_signal {
         return Ok(SkipNav::Enter);
     }
@@ -535,31 +508,33 @@ async fn skip_if_configured(
 /// Per-section meaningful-config detector used as the secondary skip-gate
 /// signal alongside the completed_sections marker. Returns true when the
 /// section has values that can only come from user action (i.e. diverged
-/// from `Config::default()`'s idle state).
-fn section_has_signal(cfg: &Config, section_key: &str) -> bool {
-    match section_key {
-        "model_providers" => !cfg.model_providers.is_empty(),
+/// from `Config::default()`'s idle state). Exhaustive over [`Section`]
+/// so adding a wizard variant forces a decision here.
+fn section_has_signal(cfg: &Config, section: Section) -> bool {
+    match section {
+        Section::ModelProviders => !cfg.model_providers.is_empty(),
         // `channels.cli: bool` is a default-true scalar that lives directly
         // under `channels.*`, so a bare `starts_with("channels.")` check
         // fires on every fresh install. Require a nested channel config
         // (e.g. `channels.telegram.bot-token`) — anything with a second dot
         // segment — to count as user-driven signal.
-        "channels" => cfg.prop_fields().iter().any(|f| {
+        Section::Channels => cfg.prop_fields().iter().any(|f| {
             f.name
                 .strip_prefix("channels.")
                 .is_some_and(|rest| rest.contains('.'))
         }),
-        "hardware" => cfg.hardware.enabled,
-        // Personality has no config-schema fields. The signal is whether
-        // the user has authored any of the editable markdown files in
-        // their workspace.
-        "personality" => EDITABLE_PERSONALITY_FILES
-            .iter()
-            .any(|f| cfg.workspace_dir.join(f).is_file()),
-        // Memory's default backend is "sqlite" and Tunnel's is "none" — both
-        // are valid user choices indistinguishable from untouched defaults.
-        // Marker-only for these two.
-        _ => false,
+        Section::Hardware => cfg.hardware.enabled,
+        // Memory's default backend is "sqlite" and Tunnel's is "none" —
+        // both are valid user choices indistinguishable from untouched
+        // defaults. TTS / transcription providers and agents start
+        // empty; their existence in the typed family map IS the signal,
+        // not a derivable default-divergence. Marker-only for these.
+        Section::Workspace
+        | Section::TtsProviders
+        | Section::TranscriptionProviders
+        | Section::Memory
+        | Section::Tunnel
+        | Section::Agents => false,
     }
 }
 
@@ -711,18 +686,17 @@ async fn prompt_alias_name(ui: &mut dyn OnboardUi, suggestion: &str) -> Result<O
     }
 }
 
-async fn mark_completed(cfg: &mut Config, section_key: &str) -> Result<()> {
+async fn mark_completed(cfg: &mut Config, section: Section) -> Result<()> {
+    let key = section.as_str();
     if cfg
         .onboard_state
         .completed_sections
         .iter()
-        .any(|s| s == section_key)
+        .any(|s| s == key)
     {
         return Ok(());
     }
-    cfg.onboard_state
-        .completed_sections
-        .push(section_key.to_string());
+    cfg.onboard_state.completed_sections.push(key.to_string());
     cfg.save().await?;
     Ok(())
 }
@@ -733,15 +707,7 @@ async fn mark_completed(cfg: &mut Config, section_key: &str) -> Result<()> {
 // prompt_fields_under / per-section loop), never propagates to the parent.
 
 async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Result<Nav> {
-    ui.heading(1, "Providers");
-    // Surface both auth paths up front so users with an existing key go
-    // straight to the api_key prompt, and users on OAuth-only model_providers
-    // (Codex, Claude Code, etc.) know to use the separate login flow.
-    ui.note(
-        "Paste an API key (e.g. `sk-ant-…` for Anthropic, `sk-…` for OpenAI) \
-         when prompted. For OAuth-based model_providers run: \
-         zeroclaw auth login --model-provider <name>",
-    );
+    emit_section_header(ui, Section::ModelProviders, "Providers");
 
     // Menu is driven by zeroclaw_providers::list_model_providers() — single source
     // of truth for canonical names, display names, aliases.
@@ -930,7 +896,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
         break;
     }
 
-    mark_completed(cfg, "model_providers").await?;
+    mark_completed(cfg, Section::ModelProviders).await?;
     Ok(Nav::Done)
 }
 
@@ -1070,7 +1036,7 @@ async fn prompt_model(cfg: &mut Config, ui: &mut dyn OnboardUi, prefix: &str) ->
 }
 
 async fn channels(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> Result<Nav> {
-    ui.heading(1, "Channels");
+    emit_section_header(ui, Section::Channels, "Channels");
     loop {
         // Master list of all channels that exist in the schema, derived from
         // the static map_key_sections() metadata. Feature-gated channels drop
@@ -1173,20 +1139,20 @@ async fn channels(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> R
         // (not to the previous section) — user is still inside Channels.
         let _ = prompt_fields_under(cfg, ui, &prefix, &[], &[]).await?;
     }
-    mark_completed(cfg, "channels").await?;
+    mark_completed(cfg, Section::Channels).await?;
     Ok(Nav::Done)
 }
 
 async fn memory(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Result<Nav> {
-    ui.heading(1, "Memory");
+    emit_section_header(ui, Section::Memory, "Memory");
     if flags.memory.is_none() {
         match skip_if_configured(
             cfg,
             ui,
             flags,
-            "memory",
+            Section::Memory,
             "Memory",
-            section_has_signal(cfg, "memory"),
+            section_has_signal(cfg, Section::Memory),
         )
         .await?
         {
@@ -1215,19 +1181,19 @@ async fn memory(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Resu
 
     // Back on auto-save bounces to the backend picker (consumed).
     let _ = prompt_field(cfg, ui, "memory.auto-save", None).await?;
-    mark_completed(cfg, "memory").await?;
+    mark_completed(cfg, Section::Memory).await?;
     Ok(Nav::Done)
 }
 
 async fn hardware(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Result<Nav> {
-    ui.heading(1, "Hardware");
+    emit_section_header(ui, Section::Hardware, "Hardware");
     match skip_if_configured(
         cfg,
         ui,
         flags,
-        "hardware",
+        Section::Hardware,
         "Hardware",
-        section_has_signal(cfg, "hardware"),
+        section_has_signal(cfg, Section::Hardware),
     )
     .await?
     {
@@ -1250,19 +1216,19 @@ async fn hardware(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Re
             break;
         }
     }
-    mark_completed(cfg, "hardware").await?;
+    mark_completed(cfg, Section::Hardware).await?;
     Ok(Nav::Done)
 }
 
 async fn tunnel(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Result<Nav> {
-    ui.heading(1, "Tunnel");
+    emit_section_header(ui, Section::Tunnel, "Tunnel");
     match skip_if_configured(
         cfg,
         ui,
         flags,
-        "tunnel",
+        Section::Tunnel,
         "Tunnel",
-        section_has_signal(cfg, "tunnel"),
+        section_has_signal(cfg, Section::Tunnel),
     )
     .await?
     {
@@ -1316,85 +1282,12 @@ async fn tunnel(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Resu
             Nav::Done => break,
         }
     }
-    mark_completed(cfg, "tunnel").await?;
-    Ok(Nav::Done)
-}
-
-/// Personality — open `$EDITOR` on each markdown file the runtime
-/// injects into the system prompt at request time. Files default to
-/// the bundled starter template when they don't yet exist on disk;
-/// the user is free to overwrite or skip per file. Lives at the end
-/// of the flow on purpose: the structural sections (workspace,
-/// model_providers, memory, …) are answered first so the personality files
-/// can reference whatever was just configured.
-async fn personality(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Result<Nav> {
-    ui.heading(1, "Personality");
-    match skip_if_configured(
-        cfg,
-        ui,
-        flags,
-        "personality",
-        "Personality",
-        section_has_signal(cfg, "personality"),
-    )
-    .await?
-    {
-        SkipNav::Skip => return Ok(Nav::Done),
-        SkipNav::Back => return Ok(Nav::Back),
-        SkipNav::Enter => {}
-    }
-
-    let template_ctx = TemplateContext {
-        include_memory: cfg.memory.backend.as_str() != "none",
-        ..TemplateContext::default()
-    };
-    let workspace_dir = cfg.workspace_dir.clone();
-
-    loop {
-        // Build the picker fresh on every iteration so badges reflect
-        // the on-disk state after each edit.
-        let mut items: Vec<SelectItem> = EDITABLE_PERSONALITY_FILES
-            .iter()
-            .map(|filename| {
-                let exists = workspace_dir.join(filename).is_file();
-                SelectItem::with_badge(
-                    (*filename).to_string(),
-                    if exists { "saved" } else { "not saved" },
-                )
-            })
-            .collect();
-        items.push(SelectItem::new("Done"));
-
-        match ui.select("Personality file to edit", &items, None).await? {
-            Answer::Back => return Ok(Nav::Back),
-            Answer::Value(idx) if idx == EDITABLE_PERSONALITY_FILES.len() => break,
-            Answer::Value(idx) => {
-                let filename = EDITABLE_PERSONALITY_FILES[idx];
-                let path = workspace_dir.join(filename);
-                let initial = if path.is_file() {
-                    std::fs::read_to_string(&path).unwrap_or_default()
-                } else {
-                    render_personality(filename, &template_ctx).unwrap_or_default()
-                };
-                match ui.editor(&format!("Editing {filename}"), &initial).await? {
-                    Answer::Back => continue,
-                    Answer::Value(content) => {
-                        if let Some(parent) = path.parent() {
-                            std::fs::create_dir_all(parent)?;
-                        }
-                        std::fs::write(&path, content)?;
-                    }
-                }
-            }
-        }
-    }
-
-    mark_completed(cfg, "personality").await?;
+    mark_completed(cfg, Section::Tunnel).await?;
     Ok(Nav::Done)
 }
 
 async fn agents(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> Result<Nav> {
-    ui.heading(1, "Agents");
+    emit_section_header(ui, Section::Agents, "Agents");
     loop {
         let existing_aliases: Vec<String> = cfg.get_map_keys("agents").unwrap_or_default();
         let mut options: Vec<SelectItem> = existing_aliases
@@ -1442,7 +1335,7 @@ async fn agents(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> Res
         ui.heading(2, &alias);
         let _ = prompt_agent_fields(cfg, ui, &alias).await?;
     }
-    mark_completed(cfg, "agents").await?;
+    mark_completed(cfg, Section::Agents).await?;
     Ok(Nav::Done)
 }
 
@@ -1807,20 +1700,20 @@ mod tests {
     async fn section_has_signal_providers_requires_models_entry() {
         let temp = TempDir::new().unwrap();
         let mut cfg = test_cfg(&temp);
-        assert!(!section_has_signal(&cfg, "model_providers"));
+        assert!(!section_has_signal(&cfg, Section::ModelProviders));
         cfg.model_providers
             .ensure("anthropic", "default")
             .expect("anthropic typed slot");
-        assert!(section_has_signal(&cfg, "model_providers"));
+        assert!(section_has_signal(&cfg, Section::ModelProviders));
     }
 
     #[tokio::test]
     async fn section_has_signal_hardware_tracks_enabled_flag() {
         let temp = TempDir::new().unwrap();
         let mut cfg = test_cfg(&temp);
-        assert!(!section_has_signal(&cfg, "hardware"));
+        assert!(!section_has_signal(&cfg, Section::Hardware));
         cfg.hardware.enabled = true;
-        assert!(section_has_signal(&cfg, "hardware"));
+        assert!(section_has_signal(&cfg, Section::Hardware));
     }
 
     #[tokio::test]
@@ -1830,16 +1723,16 @@ mod tests {
         // Memory defaults to "sqlite" and Tunnel defaults to "none" — both
         // are valid user choices indistinguishable from untouched defaults,
         // so the completed-sections marker is the only skip-gate signal.
-        assert!(!section_has_signal(&cfg, "memory"));
-        assert!(!section_has_signal(&cfg, "tunnel"));
+        assert!(!section_has_signal(&cfg, Section::Memory));
+        assert!(!section_has_signal(&cfg, Section::Tunnel));
     }
 
     #[tokio::test]
     async fn mark_completed_is_dedupe_safe() {
         let temp = TempDir::new().unwrap();
         let mut cfg = test_cfg(&temp);
-        mark_completed(&mut cfg, "memory").await.unwrap();
-        mark_completed(&mut cfg, "memory").await.unwrap();
+        mark_completed(&mut cfg, Section::Memory).await.unwrap();
+        mark_completed(&mut cfg, Section::Memory).await.unwrap();
         let count = cfg
             .onboard_state
             .completed_sections
@@ -1858,10 +1751,16 @@ mod tests {
         // QuickUi with no scripted answers returns `default` from `confirm`,
         // which for the reconfigure prompt is `false` → SkipNav::Skip.
         let mut ui = QuickUi::new();
-        let result =
-            skip_if_configured(&cfg, &mut ui, &Flags::default(), "memory", "Memory", false)
-                .await
-                .unwrap();
+        let result = skip_if_configured(
+            &cfg,
+            &mut ui,
+            &Flags::default(),
+            Section::Memory,
+            "Memory",
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(result, SkipNav::Skip);
     }
 
@@ -1871,9 +1770,16 @@ mod tests {
         let cfg = test_cfg(&temp);
         // No marker, but caller reports meaningful config in this section.
         let mut ui = QuickUi::new();
-        let result = skip_if_configured(&cfg, &mut ui, &Flags::default(), "memory", "Memory", true)
-            .await
-            .unwrap();
+        let result = skip_if_configured(
+            &cfg,
+            &mut ui,
+            &Flags::default(),
+            Section::Memory,
+            "Memory",
+            true,
+        )
+        .await
+        .unwrap();
         assert_eq!(result, SkipNav::Skip);
     }
 
@@ -1888,7 +1794,7 @@ mod tests {
             force: true,
             ..Default::default()
         };
-        let result = skip_if_configured(&cfg, &mut ui, &flags, "memory", "Memory", true)
+        let result = skip_if_configured(&cfg, &mut ui, &flags, Section::Memory, "Memory", true)
             .await
             .unwrap();
         assert_eq!(result, SkipNav::Enter);
@@ -1899,10 +1805,16 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let cfg = test_cfg(&temp);
         let mut ui = QuickUi::new();
-        let result =
-            skip_if_configured(&cfg, &mut ui, &Flags::default(), "memory", "Memory", false)
-                .await
-                .unwrap();
+        let result = skip_if_configured(
+            &cfg,
+            &mut ui,
+            &Flags::default(),
+            Section::Memory,
+            "Memory",
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(result, SkipNav::Enter);
     }
 
@@ -2032,7 +1944,7 @@ mod tests {
             .with("api-key", "sk-custom-test")
             .with("Model", "qwen-local");
 
-        run(&mut cfg, &mut ui, Section::ModelProviders, &flags)
+        run(&mut cfg, &mut ui, Some(Section::ModelProviders), &flags)
             .await
             .unwrap();
 
@@ -2092,7 +2004,7 @@ mod tests {
             ..Default::default()
         };
         let mut ui = QuickUi::new();
-        run(&mut cfg, &mut ui, Section::ModelProviders, &flags)
+        run(&mut cfg, &mut ui, Some(Section::ModelProviders), &flags)
             .await
             .unwrap();
 
@@ -2127,7 +2039,7 @@ mod tests {
             ..Default::default()
         };
         let mut ui = QuickUi::new();
-        run(&mut cfg, &mut ui, Section::ModelProviders, &prime)
+        run(&mut cfg, &mut ui, Some(Section::ModelProviders), &prime)
             .await
             .unwrap();
         let after_first = tokio::fs::read_to_string(&cfg.config_path).await.unwrap();
@@ -2136,7 +2048,7 @@ mod tests {
         run(
             &mut cfg,
             &mut ui,
-            Section::ModelProviders,
+            Some(Section::ModelProviders),
             &Flags::default(),
         )
         .await
@@ -2159,7 +2071,7 @@ mod tests {
         let flags = Flags::default();
 
         let mut ui = QuickUi::new();
-        run(&mut cfg, &mut ui, Section::Channels, &flags)
+        run(&mut cfg, &mut ui, Some(Section::Channels), &flags)
             .await
             .unwrap();
 
@@ -2173,7 +2085,7 @@ mod tests {
         let after_first = tokio::fs::read_to_string(&cfg.config_path).await.unwrap();
 
         let mut ui = QuickUi::new();
-        run(&mut cfg, &mut ui, Section::Channels, &flags)
+        run(&mut cfg, &mut ui, Some(Section::Channels), &flags)
             .await
             .unwrap();
         let after_second = tokio::fs::read_to_string(&cfg.config_path).await.unwrap();
@@ -2201,7 +2113,7 @@ mod tests {
             // is-set-guard skip the persist, leaving the field None.
             .with("proxy-url", "")
             .with_sequence("Channel", ["telegram", "Done"]);
-        run(&mut cfg, &mut ui, Section::Channels, &flags)
+        run(&mut cfg, &mut ui, Some(Section::Channels), &flags)
             .await
             .unwrap();
 
@@ -2233,7 +2145,7 @@ mod tests {
             .with("api-url", "http://mochat-test:8080/v1")
             .with("api-token", "stub-mochat-token")
             .with_sequence("Channel", ["mochat", "Done"]);
-        run(&mut cfg, &mut ui, Section::Channels, &flags)
+        run(&mut cfg, &mut ui, Some(Section::Channels), &flags)
             .await
             .unwrap();
 
@@ -2398,7 +2310,7 @@ mod tests {
         run(
             &mut cfg,
             &mut ui,
-            Section::ModelProviders,
+            Some(Section::ModelProviders),
             &Flags::default(),
         )
         .await
@@ -2435,7 +2347,7 @@ mod tests {
         run(
             &mut cfg,
             &mut ui,
-            Section::ModelProviders,
+            Some(Section::ModelProviders),
             &Flags::default(),
         )
         .await

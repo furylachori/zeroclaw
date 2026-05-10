@@ -727,6 +727,17 @@ export interface SectionInfo {
   /** True when this section is part of the `/onboard` wizard (driven by
    *  the canonical const in `zeroclaw_config::onboarding`). */
   is_onboarding: boolean;
+  /** Editor shape (`direct_form` / `one_tier_alias_map` / `typed_family_map`
+   *  / `backend_picker`). Server-emitted from `WizardSection::shape()` so
+   *  the dashboard explorer and the onboard wizard render the same UI for
+   *  the same section without hardcoded section keys on either side.
+   *  `null` / `undefined` for sections that aren't part of the canonical wizard. */
+  shape?:
+    | 'direct_form'
+    | 'one_tier_alias_map'
+    | 'typed_family_map'
+    | 'backend_picker'
+    | null;
 }
 
 export interface SectionsResponse {

@@ -18,7 +18,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use zeroclaw_config::api_error::{ConfigApiCode, ConfigApiError};
-use zeroclaw_runtime::onboard::{Section, field_visibility};
+use zeroclaw_runtime::onboard::{field_visibility, section_for_path};
 
 use super::AppState;
 use super::api::require_auth;
@@ -610,7 +610,7 @@ pub async fn handle_list(
             } else {
                 Some(serde_json::Value::String(info.display_value.clone()))
             };
-            let section = Section::from_path(&info.name).and_then(Section::as_path_prefix);
+            let section = section_for_path(&info.name).map(|s| s.as_str());
             let enum_variants = info.enum_variants.map(|f| f()).unwrap_or_default();
             let is_env_overridden = config.prop_is_env_overridden(&info.name);
             ListEntry {

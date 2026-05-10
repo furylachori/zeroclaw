@@ -12631,15 +12631,28 @@ impl Config {
         let (zeroclaw_dir, _legacy_workspace_dir, resolution_source) =
             resolve_runtime_config_dirs(&default_zeroclaw_dir, &default_workspace_dir).await?;
 
-        // One-time, upgrade-only move of `<install>/workspace/` into
-        // `<install>/agents/default/workspace/` so legacy single-
-        // workspace installs land in the per-agent layout. The
-        // "default" alias is the transition bridge: V3 schema
-        // migration synthesizes the matching `agents.default` config
-        // entry, so the moved dir always lines up with a real agent.
-        // Idempotent: no-op on fresh installs and on already-migrated
-        // installs.
-        if zeroclaw_dir.is_dir()
+        // One-time, V<3 → V3 ONLY move of `<install>/workspace/` into
+        // `<install>/agents/default/workspace/`. The "default" alias is
+        // the migration bridge — it must NEVER appear on a fresh install
+        // or on a V3 install that already declared its own aliases.
+        //
+        // Gate strictly on the on-disk config's `schema_version`:
+        // - missing config.toml      → fresh install, skip.
+        // - schema_version >= 3      → already V3, skip.
+        // - schema_version 1 or 2    → upgrade in progress, run.
+        // Anything else (parse failure, weird value) is treated as
+        // "don't touch the filesystem"; the TOML migrator will surface
+        // the real error.
+        let config_toml_path = zeroclaw_dir.join("config.toml");
+        let needs_fs_migration = config_toml_path.is_file()
+            && matches!(
+                std::fs::read_to_string(&config_toml_path)
+                    .ok()
+                    .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
+                    .and_then(|v| crate::migration::detect_version(&v).ok()),
+                Some(v) if v < crate::migration::CURRENT_SCHEMA_VERSION
+            );
+        if needs_fs_migration
             && let Err(e) =
                 crate::migration::migrate_legacy_workspace_to_default_agent(&zeroclaw_dir)
         {
@@ -12784,7 +12797,19 @@ impl Config {
             config.env_overridden_paths = applied.paths;
             config.pre_override_snapshots = applied.snapshots;
 
-            config.validate()?;
+            // Validation must NOT prevent the daemon from booting. If
+            // it did, a single broken agent reference would lock the
+            // operator out of `/config` — the only place they can fix
+            // it. Demote to a startup warning; the gateway and dashboard
+            // still come up so the user can navigate to the bad section
+            // and repair it.
+            if let Err(e) = config.validate() {
+                tracing::warn!(
+                    error = %format!("{e:#}"),
+                    "[system] config has validation errors — booting anyway so you \
+                     can fix them via /config or `zeroclaw config set`"
+                );
+            }
             tracing::info!(
                 path = %config.config_path.display(),
                 workspace = %config.workspace_dir.display(),
@@ -12815,7 +12840,16 @@ impl Config {
             config.env_overridden_paths = applied.paths;
             config.pre_override_snapshots = applied.snapshots;
 
-            config.validate()?;
+            // Same boot-resilience as the load-existing branch above:
+            // a fresh-init config can't realistically fail validation,
+            // but if it does we still want the daemon up.
+            if let Err(e) = config.validate() {
+                tracing::warn!(
+                    error = %format!("{e:#}"),
+                    "[system] freshly-initialized config has validation errors — \
+                     booting anyway so you can fix them via /config"
+                );
+            }
             tracing::info!(
                 path = %config.config_path.display(),
                 workspace = %config.workspace_dir.display(),

@@ -12,7 +12,7 @@
 // SectionPicker + FieldForm components. NO hardcoded section names, field
 // labels, dropdown options, or provider lists.
 
-import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, ChevronRight, Plus, Sparkles } from 'lucide-react';
 import {
@@ -28,26 +28,6 @@ import {
 import FieldForm from '../components/onboard/FieldForm';
 import ReloadDaemonButton from '../components/onboard/ReloadDaemonButton';
 import SectionPicker from '../components/onboard/SectionPicker';
-
-// Personality pulls in CodeMirror + markdown rendering (~270KB gzipped).
-// Lazy-load so the cost isn't paid until the user opens that section.
-const PersonalityEditor = lazy(
-  () => import('../components/onboard/PersonalityEditor'),
-);
-
-// Synthetic sections that aren't backed by a config-schema prefix. They
-// render a dedicated component instead of the generic FieldForm/picker
-// flow but otherwise slot into the same group/sidebar/breadcrumb plumbing.
-const SYNTHETIC_SECTIONS: SectionInfo[] = [
-  {
-    key: 'personality',
-    label: 'Personality',
-    help: 'Edit the markdown files that shape your agent — SOUL, IDENTITY, USER, etc.',
-    has_picker: false,
-    completed: false,
-    group: 'Foundation',
-  },
-];
 
 // Display order for the curated sidebar groups. Each `SectionInfo.group`
 // from the gateway lands in one of these buckets (anything else falls
@@ -110,16 +90,10 @@ export default function Config() {
     getSections()
       .then((resp) => {
         if (cancelled) return;
-        const merged = [
-          ...resp.sections,
-          ...SYNTHETIC_SECTIONS.filter(
-            (synth) => !resp.sections.some((s) => s.key === synth.key),
-          ),
-        ];
-        setSections(merged);
-        const initialKey = sectionParam && merged.find((s) => s.key === sectionParam)
+        setSections(resp.sections);
+        const initialKey = sectionParam && resp.sections.find((s) => s.key === sectionParam)
           ? sectionParam
-          : merged[0]?.key ?? null;
+          : resp.sections[0]?.key ?? null;
         setActiveKey(initialKey);
       })
       .catch((e) => {
@@ -207,38 +181,14 @@ export default function Config() {
 
   // Determine what to render in the main pane based on URL params.
   // Two-tier alias sections route /config/<section>/<type>/<alias>.
-  const needsAliasTier =
-    activeSection?.has_picker &&
-    (activeSection.key === 'model_providers'
-      || activeSection.key === 'tts_providers'
-      || activeSection.key === 'transcription_providers'
-      || activeSection.key === 'channels');
-  // One-tier alias sections route /config/<section>/<alias> directly.
-  // The list lives at the top of the section (no type selection step).
-  const isOneTierAliasSection = activeSection?.key === 'agents';
+  // Server-emitted shape (from `WizardSection::shape()` in the Rust
+  // config crate) decides whether this section needs a type→alias picker
+  // or a flat alias list — no hardcoded section keys on the client.
+  const needsAliasTier = activeSection?.shape === 'typed_family_map';
+  const isOneTierAliasSection = activeSection?.shape === 'one_tier_alias_map';
 
   const mainContent = (() => {
     if (!activeSection) return null;
-
-    if (activeSection.key === 'personality') {
-      return (
-        <Suspense
-          fallback={
-            <div
-              className="flex items-center justify-center rounded-xl border p-12"
-              style={{ borderColor: 'var(--pc-border)', background: 'var(--pc-bg-surface)' }}
-            >
-              <div
-                className="h-6 w-6 border-2 rounded-full animate-spin"
-                style={{ borderColor: 'var(--pc-border)', borderTopColor: 'var(--pc-accent)' }}
-              />
-            </div>
-          }
-        >
-          <PersonalityEditor />
-        </Suspense>
-      );
-    }
 
     if (!activeSection.has_picker) {
       return (
@@ -534,6 +484,36 @@ export default function Config() {
 
 // Alias list page: /config/:section/:type
 // Shows existing aliases as clickable rows + an inline "new alias" input.
+/// Help block shown above every alias-input field. Mirrors the wizard's
+/// `AliasHelpBox` text — keep both in sync if the validator's rules
+/// (`zeroclaw_config::helpers::validate_alias_key`) ever change.
+function ConfigAliasHelpBox() {
+  return (
+    <div
+      className="rounded-md border px-3 py-2 text-xs"
+      style={{
+        borderColor: 'var(--pc-border)',
+        background: 'var(--pc-bg-surface-subtle)',
+        color: 'var(--pc-text-secondary)',
+      }}
+    >
+      <p className="mb-1">
+        <strong>Alias.</strong> A short stable name you’ll use everywhere else
+        in config to point at this entry (agents, routes, and per-channel
+        bindings reference it as <code>{'<type>'}.{'<alias>'}</code>). Aliases
+        let you have several entries of the same type — a <code>work</code>{' '}
+        credential and a <code>personal</code> one, for example.
+      </p>
+      <p className="mb-0">
+        Rules: lowercase letters, digits, single underscores; 1–63 chars; no
+        leading/trailing/double underscores, no dots, hyphens, or spaces.{' '}
+        <strong>Aliases can’t be renamed in v0.8.0</strong> — pick something
+        you’ll keep, or delete and recreate.
+      </p>
+    </div>
+  );
+}
+
 function AliasListView({
   sectionKey,
   typeKey,
@@ -595,6 +575,8 @@ function AliasListView({
         <ArrowLeft className="h-4 w-4" />
         Back
       </button>
+
+      <ConfigAliasHelpBox />
 
       {error && (
         <div

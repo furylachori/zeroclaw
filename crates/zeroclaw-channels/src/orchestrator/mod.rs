@@ -97,8 +97,6 @@ use zeroclaw_runtime::agent::loop_::{
     scrub_credentials,
 };
 use zeroclaw_runtime::approval::ApprovalManager;
-#[cfg(not(feature = "whatsapp-web"))]
-use zeroclaw_runtime::i18n;
 use zeroclaw_runtime::observability::traits::{ObserverEvent, ObserverMetric};
 use zeroclaw_runtime::observability::{self, Observer, runtime_trace};
 use zeroclaw_runtime::platform;
