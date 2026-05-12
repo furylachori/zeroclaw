@@ -63,7 +63,7 @@ pub async fn handle_openapi_json() -> Response {
 pub fn build_spec() -> serde_json::Value {
     use crate::api_config::{
         DriftEntry, DriftResponse, InitQuery, InitResponse, ListResponse, MigrateResponse, PatchOp,
-        PatchResponse, PropPutBody, PropResponse, SecretResponse,
+        PatchResponse, PropPutBody, PropResponse, ReloadStatusResponse, SecretResponse,
     };
     use zeroclaw_config::api_error::ConfigApiError;
 
@@ -85,6 +85,7 @@ pub fn build_spec() -> serde_json::Value {
             "MigrateResponse":  schema_value::<MigrateResponse>(),
             "DriftEntry":       schema_value::<DriftEntry>(),
             "DriftResponse":    schema_value::<DriftResponse>(),
+            "ReloadStatusResponse": schema_value::<ReloadStatusResponse>(),
             "Config":           schema_value::<zeroclaw_config::schema::Config>(),
         },
         "securitySchemes": {
@@ -257,6 +258,19 @@ pub fn build_spec() -> serde_json::Value {
                 }
             }
         },
+        "/api/config/reload-status": {
+            "get": {
+                "tags": ["config"],
+                "summary": "Pending-reload flag for the running daemon",
+                "description": "Returns `{pending_reload: true}` when one or more config writes have landed since the last `/admin/reload`. Distinct from `/api/config/drift`, which compares disk to in-memory; this flag fires on in-process PATCHes that hot-swap memory but still need subsystem re-init (channels, providers, scheduler) to take effect.",
+                "responses": {
+                    "200": {
+                        "description": "Pending-reload flag.",
+                        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ReloadStatusResponse" } } }
+                    }
+                }
+            }
+        },
         "/api/config/migrate": {
             "post": {
                 "tags": ["config"],
@@ -408,6 +422,8 @@ mod tests {
         assert!(paths.get("/api/config").is_some());
         assert!(paths.get("/api/config/init").is_some());
         assert!(paths.get("/api/config/migrate").is_some());
+        assert!(paths.get("/api/config/drift").is_some());
+        assert!(paths.get("/api/config/reload-status").is_some());
     }
 
     #[cfg(feature = "schema-export")]
