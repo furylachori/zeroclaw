@@ -1669,6 +1669,86 @@ enabled = false
 }
 
 #[test]
+fn v2_tunnel_provider_renamed_to_tunnel_provider() {
+    // V2 grammar wrote `[tunnel] provider = "cloudflare"`. V3 qualifies the
+    // field name as `tunnel_provider` (it's not a model provider). Without
+    // this rename V3 deserialize fails with `missing field tunnel_provider`.
+    let raw = r#"
+default_provider = "openai"
+default_model = "gpt-4o-mini"
+
+[tunnel]
+provider = "cloudflare"
+
+[tunnel.cloudflare]
+token = "stub"
+"#;
+    let cfg = migrate_to_current(raw).expect("V2 [tunnel] provider must migrate");
+    assert_eq!(cfg.tunnel.tunnel_provider, "cloudflare");
+}
+
+#[test]
+fn v2_tunnel_provider_none_migrates() {
+    // The exact shape from the user-reported config: `[tunnel] provider =
+    // "none"` with empty sub-blocks.
+    let raw = r#"
+default_provider = "openai"
+default_model = "gpt-4o-mini"
+
+[tunnel]
+provider = "none"
+
+[tunnel.cloudflare]
+token = ""
+
+[tunnel.custom]
+start_command = ""
+
+[tunnel.tailscale]
+funnel = false
+"#;
+    let cfg = migrate_to_current(raw).expect("V2 [tunnel] provider = \"none\" must migrate");
+    assert_eq!(cfg.tunnel.tunnel_provider, "none");
+}
+
+#[test]
+fn v2_web_search_provider_renamed_to_search_provider() {
+    // V2 grammar wrote `[web_search] provider = "duckduckgo"`. V3 qualifies
+    // as `search_provider` (it's not a model provider).
+    let raw = r#"
+default_provider = "openai"
+default_model = "gpt-4o-mini"
+
+[web_search]
+enabled = true
+provider = "duckduckgo"
+max_results = 5
+"#;
+    let cfg = migrate_to_current(raw).expect("V2 [web_search] provider must migrate");
+    assert_eq!(cfg.web_search.search_provider, "duckduckgo");
+}
+
+#[test]
+fn rename_subkey_drops_v2_form_when_operator_already_wrote_v3_form() {
+    // Defensive: an operator who hand-edited their config to use the V3
+    // qualified key but left the V2 stale key behind should not double-error
+    // — V3 wins, V2 is dropped silently.
+    let raw = r#"
+default_provider = "openai"
+default_model = "gpt-4o-mini"
+
+[tunnel]
+provider = "cloudflare"
+tunnel_provider = "tailscale"
+
+[tunnel.tailscale]
+funnel = true
+"#;
+    let cfg = migrate_to_current(raw).expect("V3-key-wins semantics");
+    assert_eq!(cfg.tunnel.tunnel_provider, "tailscale");
+}
+
+#[test]
 fn v3_channel_types_covers_every_typed_channel_slot() {
     // Drift gate: every `#[nested] HashMap<String, T>` field under
     // ChannelsConfig must appear in V3_CHANNEL_TYPES (or be intentionally

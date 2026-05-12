@@ -439,7 +439,7 @@ pub async fn run_gateway(
 ) -> Result<()> {
     // ── Security: warn on public bind without tunnel or explicit opt-in ──
     if is_public_bind(host)
-        && config.tunnel.model_provider == "none"
+        && config.tunnel.tunnel_provider == "none"
         && !config.gateway.allow_public_bind
     {
         tracing::warn!(

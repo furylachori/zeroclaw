@@ -567,7 +567,7 @@ pub fn all_tools_with_runtime(
     // Web search tool (enabled by default for GLM and other models)
     if root_config.web_search.enabled {
         tool_arcs.push(Arc::new(WebSearchTool::new_with_config(
-            root_config.web_search.model_provider.clone(),
+            root_config.web_search.search_provider.clone(),
             root_config.web_search.brave_api_key.clone(),
             root_config.web_search.tavily_api_key.clone(),
             root_config.web_search.searxng_instance_url.clone(),

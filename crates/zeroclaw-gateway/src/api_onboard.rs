@@ -596,7 +596,7 @@ fn picker_items_for(
         Section::Tunnel => PickerDispatch::Items(schema_walk_picker_with_none(
             cfg,
             "tunnel",
-            "tunnel.model_provider",
+            "tunnel.tunnel_provider",
         )),
         Section::Agents => PickerDispatch::Items(agents_picker(cfg)),
         // Storage is two-tier (`storage.<kind>.<alias>`) — same shape
@@ -764,7 +764,7 @@ fn agents_picker(cfg: &zeroclaw_config::schema::Config) -> Vec<PickerItem> {
 }
 
 /// `tunnel`-flavored picker: same as `schema_walk_picker` plus a synthetic
-/// `none` entry at the top, marked active when the current `tunnel.model_provider`
+/// `none` entry at the top, marked active when the current `tunnel.tunnel_provider`
 /// matches. Mirrors the TUI's tunnel section.
 fn schema_walk_picker_with_none(
     cfg: &zeroclaw_config::schema::Config,
@@ -820,7 +820,7 @@ pub struct SectionItemPath {
 ///   then return `model_providers.<key>`.
 /// * `channels` → init_defaults under `channels.<key>`, return `channels.<key>`.
 /// * `memory` → set_prop `memory.backend = <key>`, return `memory`.
-/// * `tunnel` → set_prop `tunnel.model_provider = <key>` (and init_defaults the
+/// * `tunnel` → set_prop `tunnel.tunnel_provider = <key>` (and init_defaults the
 ///   subsection if `<key>` is not "none"), return `tunnel.<key>` (or `tunnel`
 ///   for the `none` case).
 ///
@@ -974,13 +974,13 @@ pub async fn handle_section_select(
             ("memory".to_string(), true)
         }
         Section::Tunnel => {
-            if let Err(e) = working.set_prop("tunnel.model_provider", &key) {
+            if let Err(e) = working.set_prop("tunnel.tunnel_provider", &key) {
                 return error_response(
                     ConfigApiError::new(
                         ConfigApiCode::ValidationFailed,
-                        format!("could not set tunnel.model_provider = `{key}`: {e}"),
+                        format!("could not set tunnel.tunnel_provider = `{key}`: {e}"),
                     )
-                    .with_path("tunnel.model_provider"),
+                    .with_path("tunnel.tunnel_provider"),
                 );
             }
             let prefix = if key == "none" {
@@ -1226,7 +1226,7 @@ mod tests {
     #[test]
     fn tunnel_picker_includes_synthetic_none() {
         let cfg = empty_cfg();
-        let items = schema_walk_picker_with_none(&cfg, "tunnel", "tunnel.model_provider");
+        let items = schema_walk_picker_with_none(&cfg, "tunnel", "tunnel.tunnel_provider");
         assert_eq!(
             items[0].key, "none",
             "`none` must be the first entry in the tunnel picker"

@@ -73,15 +73,15 @@ pub async fn kill_shared(proc: &SharedProcess) -> Result<()> {
 
 // ── Factory ──────────────────────────────────────────────────────
 
-/// Create a tunnel from config. Returns `None` for model_provider "none".
+/// Create a tunnel from config. Returns `None` for tunnel_provider "none".
 pub fn create_tunnel(config: &TunnelConfig) -> Result<Option<Box<dyn Tunnel>>> {
-    match config.model_provider.as_str() {
+    match config.tunnel_provider.as_str() {
         "none" | "" => Ok(None),
 
         "cloudflare" => {
             let cf = config.cloudflare.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "tunnel.model_provider = \"cloudflare\" but [tunnel.cloudflare] section is missing"
+                    "tunnel.tunnel_provider = \"cloudflare\" but [tunnel.cloudflare] section is missing"
                 )
             })?;
             Ok(Some(Box::new(CloudflareTunnel::new(cf.token.clone()))))
@@ -101,7 +101,7 @@ pub fn create_tunnel(config: &TunnelConfig) -> Result<Option<Box<dyn Tunnel>>> {
         "ngrok" => {
             let ng = config.ngrok.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "tunnel.model_provider = \"ngrok\" but [tunnel.ngrok] section is missing"
+                    "tunnel.tunnel_provider = \"ngrok\" but [tunnel.ngrok] section is missing"
                 )
             })?;
             Ok(Some(Box::new(NgrokTunnel::new(
@@ -113,7 +113,7 @@ pub fn create_tunnel(config: &TunnelConfig) -> Result<Option<Box<dyn Tunnel>>> {
         "openvpn" => {
             let ov = config.openvpn.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "tunnel.model_provider = \"openvpn\" but [tunnel.openvpn] section is missing"
+                    "tunnel.tunnel_provider = \"openvpn\" but [tunnel.openvpn] section is missing"
                 )
             })?;
             Ok(Some(Box::new(OpenVpnTunnel::new(
@@ -128,7 +128,7 @@ pub fn create_tunnel(config: &TunnelConfig) -> Result<Option<Box<dyn Tunnel>>> {
         "custom" => {
             let cu = config.custom.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "tunnel.model_provider = \"custom\" but [tunnel.custom] section is missing"
+                    "tunnel.tunnel_provider = \"custom\" but [tunnel.custom] section is missing"
                 )
             })?;
             Ok(Some(Box::new(CustomTunnel::new(
@@ -141,7 +141,7 @@ pub fn create_tunnel(config: &TunnelConfig) -> Result<Option<Box<dyn Tunnel>>> {
         "pinggy" => {
             let pg = config.pinggy.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "tunnel.model_provider = \"pinggy\" but [tunnel.pinggy] section is missing"
+                    "tunnel.tunnel_provider = \"pinggy\" but [tunnel.pinggy] section is missing"
                 )
             })?;
             Ok(Some(Box::new(PinggyTunnel::new(
@@ -151,7 +151,7 @@ pub fn create_tunnel(config: &TunnelConfig) -> Result<Option<Box<dyn Tunnel>>> {
         }
 
         other => bail!(
-            "Unknown tunnel model_provider: \"{other}\". Valid: none, cloudflare, tailscale, ngrok, openvpn, pinggy, custom"
+            "Unknown tunnel_provider: \"{other}\". Valid: none, cloudflare, tailscale, ngrok, openvpn, pinggy, custom"
         ),
     }
 }
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn factory_empty_string_returns_none() {
         let cfg = TunnelConfig {
-            model_provider: String::new(),
+            tunnel_provider: String::new(),
             ..TunnelConfig::default()
         };
         let t = create_tunnel(&cfg).unwrap();
@@ -198,16 +198,16 @@ mod tests {
     #[test]
     fn factory_unknown_provider_errors() {
         let cfg = TunnelConfig {
-            model_provider: "wireguard".into(),
+            tunnel_provider: "wireguard".into(),
             ..TunnelConfig::default()
         };
-        assert_tunnel_err(&cfg, "Unknown tunnel model_provider");
+        assert_tunnel_err(&cfg, "Unknown tunnel_provider");
     }
 
     #[test]
     fn factory_cloudflare_missing_config_errors() {
         let cfg = TunnelConfig {
-            model_provider: "cloudflare".into(),
+            tunnel_provider: "cloudflare".into(),
             ..TunnelConfig::default()
         };
         assert_tunnel_err(&cfg, "[tunnel.cloudflare]");
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn factory_cloudflare_with_config_ok() {
         let cfg = TunnelConfig {
-            model_provider: "cloudflare".into(),
+            tunnel_provider: "cloudflare".into(),
             cloudflare: Some(CloudflareTunnelConfig {
                 token: "test-token".into(),
             }),
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn factory_tailscale_defaults_ok() {
         let cfg = TunnelConfig {
-            model_provider: "tailscale".into(),
+            tunnel_provider: "tailscale".into(),
             ..TunnelConfig::default()
         };
         let t = create_tunnel(&cfg).unwrap();
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn factory_ngrok_missing_config_errors() {
         let cfg = TunnelConfig {
-            model_provider: "ngrok".into(),
+            tunnel_provider: "ngrok".into(),
             ..TunnelConfig::default()
         };
         assert_tunnel_err(&cfg, "[tunnel.ngrok]");
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn factory_ngrok_with_config_ok() {
         let cfg = TunnelConfig {
-            model_provider: "ngrok".into(),
+            tunnel_provider: "ngrok".into(),
             ngrok: Some(NgrokTunnelConfig {
                 auth_token: "tok".into(),
                 domain: None,
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn factory_custom_missing_config_errors() {
         let cfg = TunnelConfig {
-            model_provider: "custom".into(),
+            tunnel_provider: "custom".into(),
             ..TunnelConfig::default()
         };
         assert_tunnel_err(&cfg, "[tunnel.custom]");
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn factory_custom_with_config_ok() {
         let cfg = TunnelConfig {
-            model_provider: "custom".into(),
+            tunnel_provider: "custom".into(),
             custom: Some(CustomTunnelConfig {
                 start_command: "echo tunnel".into(),
                 health_url: None,
@@ -290,7 +290,7 @@ mod tests {
     #[test]
     fn factory_pinggy_missing_config_errors() {
         let cfg = TunnelConfig {
-            model_provider: "pinggy".into(),
+            tunnel_provider: "pinggy".into(),
             ..TunnelConfig::default()
         };
         assert_tunnel_err(&cfg, "[tunnel.pinggy]");
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn factory_pinggy_with_config_ok() {
         let cfg = TunnelConfig {
-            model_provider: "pinggy".into(),
+            tunnel_provider: "pinggy".into(),
             pinggy: Some(PinggyTunnelConfig {
                 token: Some("tok".into()),
                 region: None,
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn factory_openvpn_missing_config_errors() {
         let cfg = TunnelConfig {
-            model_provider: "openvpn".into(),
+            tunnel_provider: "openvpn".into(),
             ..TunnelConfig::default()
         };
         assert_tunnel_err(&cfg, "[tunnel.openvpn]");
@@ -388,7 +388,7 @@ mod tests {
     #[test]
     fn factory_openvpn_with_config_ok() {
         let cfg = TunnelConfig {
-            model_provider: "openvpn".into(),
+            tunnel_provider: "openvpn".into(),
             openvpn: Some(OpenVpnTunnelConfig {
                 config_file: "client.ovpn".into(),
                 auth_file: None,

@@ -399,10 +399,50 @@ impl V2Config {
             passthrough.insert("agents".to_string(), toml::Value::Table(new_agents));
         }
 
-        // 9. set schema_version = 3
+        // 9. Qualify bare-`provider` keys on tables whose V3 schema renamed
+        //    them to a domain-qualified noun. The V2 grammar wrote
+        //    `[tunnel] provider = "cloudflare"` and `[web_search] provider
+        //    = "duckduckgo"`; V3's qualify-everything sweep renamed both
+        //    field idents to their disambiguated form. Without this rewrite
+        //    the V3 deserializer fails with `missing field tunnel_provider`
+        //    / `missing field search_provider`.
+        rename_subkey(&mut passthrough, "tunnel", "provider", "tunnel_provider");
+        rename_subkey(
+            &mut passthrough,
+            "web_search",
+            "provider",
+            "search_provider",
+        );
+
+        // 10. set schema_version = 3
         passthrough.insert("schema_version".to_string(), toml::Value::Integer(3));
 
         Ok(toml::Value::Table(passthrough))
+    }
+}
+
+/// Rename `inner` to `replacement` inside the `[<parent>]` table when both
+/// the parent and the inner key are present. No-op if either is absent or
+/// if `replacement` already exists (operator wins; their explicit V3 key is
+/// the source of truth). Used for V3 schema field renames where the
+/// migration just needs to rewrite a flat scalar in place.
+fn rename_subkey(table: &mut toml::Table, parent: &str, inner: &str, replacement: &str) {
+    let Some(toml::Value::Table(parent_tbl)) = table.get_mut(parent) else {
+        return;
+    };
+    if parent_tbl.contains_key(replacement) {
+        // Operator already wrote the V3 key; nothing to do. If they ALSO
+        // wrote the V2 key, drop the stale one so the deserializer doesn't
+        // see a stray field on a `#[serde(deny_unknown_fields)]` struct.
+        let _ = parent_tbl.remove(inner);
+        return;
+    }
+    if let Some(value) = parent_tbl.remove(inner) {
+        parent_tbl.insert(replacement.to_string(), value);
+        tracing::info!(
+            target: "migration",
+            "[{parent}].{inner} renamed to [{parent}].{replacement} (V3 qualified-noun rename)"
+        );
     }
 }
 

@@ -5609,20 +5609,20 @@ pub struct WebSearchConfig {
     /// Enable `web_search_tool` for web searches
     #[serde(default)]
     pub enabled: bool,
-    /// Search model_provider: "duckduckgo" (free), "brave" (requires API key), "tavily" (requires API key), or "searxng" (self-hosted)
+    /// Search provider: "duckduckgo" (free), "brave" (requires API key), "tavily" (requires API key), or "searxng" (self-hosted)
     #[serde(default = "default_web_search_provider")]
-    pub model_provider: String,
-    /// Brave Search API key (required if model_provider is "brave")
+    pub search_provider: String,
+    /// Brave Search API key (required if search_provider is "brave")
     #[serde(default)]
     #[secret]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub brave_api_key: Option<String>,
-    /// Tavily Search API key (required if model_provider is "tavily")
+    /// Tavily Search API key (required if search_provider is "tavily")
     #[serde(default)]
     #[secret]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub tavily_api_key: Option<String>,
-    /// SearXNG instance URL (required if model_provider is `"searxng"`), e.g. `"https://searx.example.com"`.
+    /// SearXNG instance URL (required if search_provider is `"searxng"`), e.g. `"https://searx.example.com"`.
     #[serde(default)]
     pub searxng_instance_url: Option<String>,
     /// Maximum results per search (1-10)
@@ -5649,7 +5649,7 @@ impl Default for WebSearchConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            model_provider: default_web_search_provider(),
+            search_provider: default_web_search_provider(),
             brave_api_key: None,
             tavily_api_key: None,
             searxng_instance_url: None,
@@ -9180,34 +9180,34 @@ fn default_max_run_history() -> u32 {
 #[prefix = "tunnel"]
 pub struct TunnelConfig {
     /// How the gateway gets exposed to the public internet so webhooks (Telegram, Slack, etc.) can reach it. `none` = keep it local, no tunnel; `cloudflare` = Cloudflare Tunnel via cloudflared (needs a Zero Trust account and token); `tailscale` = Tailscale Funnel/Serve (tailnet-only or public, no account beyond tailscale); `ngrok` = ngrok agent with auth token; `openvpn` = bring-your-own OpenVPN egress; `pinggy` = Pinggy SSH tunnels (quick one-shot URLs); `custom` = run an arbitrary command you define under `[tunnel.custom]`.
-    pub model_provider: String,
+    pub tunnel_provider: String,
 
-    /// Cloudflare Tunnel configuration (used when `model_provider = "cloudflare"`).
+    /// Cloudflare Tunnel configuration (used when `tunnel_provider = "cloudflare"`).
     #[serde(default)]
     #[nested]
     pub cloudflare: Option<CloudflareTunnelConfig>,
 
-    /// Tailscale Funnel/Serve configuration (used when `model_provider = "tailscale"`).
+    /// Tailscale Funnel/Serve configuration (used when `tunnel_provider = "tailscale"`).
     #[serde(default)]
     #[nested]
     pub tailscale: Option<TailscaleTunnelConfig>,
 
-    /// ngrok tunnel configuration (used when `model_provider = "ngrok"`).
+    /// ngrok tunnel configuration (used when `tunnel_provider = "ngrok"`).
     #[serde(default)]
     #[nested]
     pub ngrok: Option<NgrokTunnelConfig>,
 
-    /// OpenVPN tunnel configuration (used when `model_provider = "openvpn"`).
+    /// OpenVPN tunnel configuration (used when `tunnel_provider = "openvpn"`).
     #[serde(default)]
     #[nested]
     pub openvpn: Option<OpenVpnTunnelConfig>,
 
-    /// Custom tunnel command configuration (used when `model_provider = "custom"`).
+    /// Custom tunnel command configuration (used when `tunnel_provider = "custom"`).
     #[serde(default)]
     #[nested]
     pub custom: Option<CustomTunnelConfig>,
 
-    /// Pinggy tunnel configuration (used when `model_provider = "pinggy"`).
+    /// Pinggy tunnel configuration (used when `tunnel_provider = "pinggy"`).
     #[serde(default)]
     #[nested]
     pub pinggy: Option<PinggyTunnelConfig>,
@@ -9216,7 +9216,7 @@ pub struct TunnelConfig {
 impl Default for TunnelConfig {
     fn default() -> Self {
         Self {
-            model_provider: "none".into(),
+            tunnel_provider: "none".into(),
             cloudflare: None,
             tailscale: None,
             ngrok: None,
@@ -9266,8 +9266,8 @@ pub struct NgrokTunnelConfig {
 
 /// OpenVPN tunnel configuration (`[tunnel.openvpn]`).
 ///
-/// Required when `tunnel.model_provider = "openvpn"`. Omitting this section entirely
-/// preserves previous behavior. Setting `tunnel.model_provider = "none"` (or removing
+/// Required when `tunnel.tunnel_provider = "openvpn"`. Omitting this section entirely
+/// preserves previous behavior. Setting `tunnel.tunnel_provider = "none"` (or removing
 /// the `[tunnel.openvpn]` block) cleanly reverts to no-tunnel mode.
 ///
 /// Defaults: `connect_timeout_secs = 30`.
@@ -12811,9 +12811,9 @@ impl Config {
     /// obviously invalid values early instead of failing at arbitrary runtime points.
     pub fn validate(&self) -> Result<()> {
         // Tunnel — OpenVPN
-        if self.tunnel.model_provider.trim() == "openvpn" {
+        if self.tunnel.tunnel_provider.trim() == "openvpn" {
             let openvpn = self.tunnel.openvpn.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("tunnel.model_provider='openvpn' requires [tunnel.openvpn]")
+                anyhow::anyhow!("tunnel.tunnel_provider='openvpn' requires [tunnel.openvpn]")
             })?;
 
             if openvpn.config_file.trim().is_empty() {

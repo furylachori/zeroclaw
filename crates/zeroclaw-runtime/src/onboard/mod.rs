@@ -1287,7 +1287,7 @@ async fn tunnel(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Resu
         provider_names.insert(0, "none".to_string());
 
         let options: Vec<SelectItem> = provider_names.iter().map(SelectItem::new).collect();
-        let current_model_provider = cfg.tunnel.model_provider.clone();
+        let current_model_provider = cfg.tunnel.tunnel_provider.clone();
         let current_idx = provider_names
             .iter()
             .position(|p| p == &current_model_provider);
@@ -1301,7 +1301,7 @@ async fn tunnel(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Resu
         let new_model_provider = provider_names[idx].clone();
 
         if new_model_provider != current_model_provider {
-            persist(cfg, "tunnel.model_provider", &new_model_provider).await?;
+            persist(cfg, "tunnel.tunnel_provider", &new_model_provider).await?;
         }
 
         if new_model_provider == "none" {
