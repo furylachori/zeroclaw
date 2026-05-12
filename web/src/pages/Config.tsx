@@ -463,17 +463,6 @@ export default function Config() {
               </div>
             </div>
 
-            {drifted.length > 0 && (
-              <PageDriftBanner
-                drifted={drifted}
-                onReloaded={() => {
-                  goToSection(activeSection.key);
-                  fetchDrift();
-                  setReloadKey((n) => n + 1);
-                }}
-              />
-            )}
-
             {mainContent}
           </div>
         )}
@@ -656,52 +645,6 @@ function AliasListView({
   );
 }
 
-function PageDriftBanner({
-  drifted,
-  onReloaded,
-}: {
-  drifted: DriftEntry[];
-  onReloaded: () => void;
-}) {
-  return (
-    <div
-      className="rounded-xl border p-3 text-sm flex flex-col gap-2"
-      style={{
-        borderColor: 'var(--color-status-warning, #f5b400)',
-        background: 'rgba(245, 180, 0, 0.06)',
-      }}
-    >
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <span style={{ color: 'var(--pc-text-primary)' }}>
-          ⚠ {drifted.length} path{drifted.length === 1 ? '' : 's'} differ
-          {drifted.length === 1 ? 's' : ''} from on-disk
-        </span>
-        <ReloadDaemonButton onReloaded={onReloaded} />
-      </div>
-      <ul
-        className="text-xs flex flex-col gap-0.5"
-        style={{ color: 'var(--pc-text-muted)' }}
-      >
-        {drifted.slice(0, 6).map((d) => (
-          <li key={d.path} className="font-mono break-all">
-            {d.path}
-            {d.secret && (
-              <span style={{ color: 'var(--pc-text-faint)' }}>
-                {' '}
-                (secret — values not shown)
-              </span>
-            )}
-          </li>
-        ))}
-        {drifted.length > 6 && (
-          <li style={{ color: 'var(--pc-text-faint)' }}>
-            …and {drifted.length - 6} more
-          </li>
-        )}
-      </ul>
-    </div>
-  );
-}
 
 interface SectionOverviewProps {
   section: SectionInfo;
