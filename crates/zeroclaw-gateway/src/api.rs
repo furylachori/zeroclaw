@@ -52,6 +52,12 @@ pub struct MemoryQuery {
     pub since: Option<String>,
     /// Filter memories created at or before (RFC 3339 / ISO 8601)
     pub until: Option<String>,
+    /// When set to a configured agent alias, the request goes through
+    /// that agent's per-alias memory backend (so SQL backends filter by
+    /// the agent's UUID, Markdown reads only that agent's directory,
+    /// etc.). Omit for the install-wide view.
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -59,6 +65,18 @@ pub struct MemoryStoreBody {
     pub key: String,
     pub content: String,
     pub category: Option<String>,
+    /// Configured agent alias to write under. When omitted the store goes
+    /// to the install-wide memory backend (no per-agent attribution).
+    #[serde(default)]
+    pub agent: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct MemoryDeleteQuery {
+    /// Configured agent alias to delete from. Omit for the install-wide
+    /// backend.
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -96,10 +114,21 @@ pub struct CronPatchBody {
 
 // ── Handlers ────────────────────────────────────────────────────
 
+/// Query parameters for `GET /api/status`. Pass `?agent=<alias>` to
+/// have `model_provider`, `model`, `temperature`, and `memory_backend`
+/// reflect that specific agent's resolved config; omit it for the
+/// install-wide summary.
+#[derive(Debug, Deserialize)]
+pub struct StatusQuery {
+    #[serde(default)]
+    pub agent: Option<String>,
+}
+
 /// GET /api/status — system status overview
 pub async fn handle_api_status(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<StatusQuery>,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, &headers) {
         return e.into_response();
@@ -121,17 +150,55 @@ pub async fn handle_api_status(
         .map(String::from)
         .unwrap_or_else(zeroclaw_runtime::i18n::detect_locale);
 
+    // Per-agent resolution when `?agent=<alias>` is supplied. Falls back
+    // to the install-wide first-of-each view when the alias is unknown
+    // (so the dashboard's old shape still renders during onboarding,
+    // before any agent exists).
+    let agent_alias = query.agent.as_deref().filter(|s| !s.trim().is_empty());
+    let (model_provider, model, temperature, memory_backend) =
+        match agent_alias.and_then(|alias| config.agent(alias).map(|a| (alias, a))) {
+            Some((alias, agent)) => {
+                let provider_ref = if agent.model_provider.is_empty() {
+                    None
+                } else {
+                    Some(agent.model_provider.as_str().to_string())
+                };
+                let resolved = config.resolved_model_provider_for_agent(alias);
+                let model = resolved
+                    .as_ref()
+                    .and_then(|(_, _, cfg)| cfg.model.clone())
+                    .unwrap_or_default();
+                let temperature = resolved
+                    .as_ref()
+                    .and_then(|(_, _, cfg)| cfg.temperature)
+                    .unwrap_or(0.7);
+                let backend_kind = agent.memory.backend;
+                let backend = serde_json::to_value(backend_kind)
+                    .ok()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_else(|| format!("{backend_kind:?}").to_lowercase());
+                (provider_ref, model, temperature, backend)
+            }
+            None => (
+                config.first_model_provider_alias(),
+                state.model.clone(),
+                state.temperature,
+                state.mem.name().to_string(),
+            ),
+        };
+
     let body = serde_json::json!({
-        "model_provider": config.first_model_provider_type(),
-        "model": state.model,
-        "temperature": state.temperature,
+        "model_provider": model_provider,
+        "model": model,
+        "temperature": temperature,
         "uptime_seconds": health.uptime_seconds,
         "gateway_port": config.gateway.port,
         "locale": locale,
-        "memory_backend": state.mem.name(),
+        "memory_backend": memory_backend,
         "paired": state.pairing.is_paired(),
         "channels": channels,
         "health": health,
+        "agent_alias": agent_alias,
     });
 
     Json(body).into_response()
@@ -700,6 +767,44 @@ pub async fn handle_api_doctor(
     .into_response()
 }
 
+/// Resolve a memory handle for the request. When `agent` names a
+/// configured `[agents.<alias>]` entry the handle is built via
+/// `zeroclaw_memory::create_memory_for_agent` so SQL backends filter by
+/// the agent's UUID, Markdown reads only that agent's directory, etc.
+/// Otherwise the install-wide `state.mem` handle is returned (the
+/// dashboard's legacy cross-agent view).
+async fn resolve_memory_handle(
+    state: &AppState,
+    agent_alias: Option<&str>,
+) -> Result<std::sync::Arc<dyn zeroclaw_memory::Memory>, (StatusCode, Json<serde_json::Value>)> {
+    let alias = match agent_alias.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(a) => a,
+        None => return Ok(state.mem.clone()),
+    };
+    let config = state.config.read().clone();
+    if config.agent(alias).is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!(
+                "Unknown agent {alias:?} (no [agents.{alias}] entry configured)"
+            )})),
+        ));
+    }
+    let api_key = config
+        .resolved_model_provider_for_agent(alias)
+        .and_then(|(_, _, cfg)| cfg.api_key.clone());
+    zeroclaw_memory::create_memory_for_agent(&config, alias, api_key.as_deref())
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::json!({"error": format!("Failed to build per-agent memory: {e:#}")}),
+                ),
+            )
+        })
+}
+
 /// GET /api/memory — list or search memory entries
 pub async fn handle_api_memory_list(
     State(state): State<AppState>,
@@ -710,12 +815,17 @@ pub async fn handle_api_memory_list(
         return e.into_response();
     }
 
+    let mem = match resolve_memory_handle(&state, params.agent.as_deref()).await {
+        Ok(m) => m,
+        Err(e) => return e.into_response(),
+    };
+
     // Use recall when query or time range is provided
     if params.query.is_some() || params.since.is_some() || params.until.is_some() {
         let query = params.query.as_deref().unwrap_or("");
         let since = params.since.as_deref();
         let until = params.until.as_deref();
-        match state.mem.recall(query, 50, None, since, until).await {
+        match mem.recall(query, 50, None, since, until).await {
             Ok(entries) => Json(serde_json::json!({"entries": entries})).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -732,7 +842,7 @@ pub async fn handle_api_memory_list(
             other => zeroclaw_memory::MemoryCategory::Custom(other.to_string()),
         });
 
-        match state.mem.list(category.as_ref(), None).await {
+        match mem.list(category.as_ref(), None).await {
             Ok(entries) => Json(serde_json::json!({"entries": entries})).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -764,11 +874,12 @@ pub async fn handle_api_memory_store(
         })
         .unwrap_or(zeroclaw_memory::MemoryCategory::Core);
 
-    match state
-        .mem
-        .store(&body.key, &body.content, category, None)
-        .await
-    {
+    let mem = match resolve_memory_handle(&state, body.agent.as_deref()).await {
+        Ok(m) => m,
+        Err(e) => return e.into_response(),
+    };
+
+    match mem.store(&body.key, &body.content, category, None).await {
         Ok(()) => Json(serde_json::json!({"status": "ok"})).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -783,12 +894,18 @@ pub async fn handle_api_memory_delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(key): Path<String>,
+    Query(query): Query<MemoryDeleteQuery>,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, &headers) {
         return e.into_response();
     }
 
-    match state.mem.forget(&key).await {
+    let mem = match resolve_memory_handle(&state, query.agent.as_deref()).await {
+        Ok(m) => m,
+        Err(e) => return e.into_response(),
+    };
+
+    match mem.forget(&key).await {
         Ok(deleted) => {
             Json(serde_json::json!({"status": "ok", "deleted": deleted})).into_response()
         }

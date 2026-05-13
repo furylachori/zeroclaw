@@ -108,7 +108,7 @@ const STATUS_CARDS = [
     icon: Cpu,
     accent: "var(--pc-accent)",
     labelKey: "dashboard.provider_model",
-    getValue: (s: StatusResponse) => s.provider ?? "Unknown",
+    getValue: (s: StatusResponse) => s.model_provider ?? "Unknown",
     getSub: (s: StatusResponse) => s.model ?? "",
   },
   {

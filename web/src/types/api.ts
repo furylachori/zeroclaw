@@ -1,5 +1,8 @@
 export interface StatusResponse {
-  provider: string | null;
+  /** Dotted `<type>.<alias>` of the first configured model provider,
+   *  or null when none is configured. Per the schema rule that
+   *  "provider" alone is reserved — always qualify it. */
+  model_provider: string | null;
   model: string;
   temperature: number;
   uptime_seconds: number;
