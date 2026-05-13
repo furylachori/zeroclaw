@@ -1657,7 +1657,7 @@ mod tests {
     #[test]
     fn json_pointer_to_dotted_handles_pointer_form() {
         assert_eq!(
-            json_pointer_to_dotted("/model_providers/openrouter/api-key"),
+            json_pointer_to_dotted("/providers/models/openrouter/api-key"),
             "providers.models.openrouter.api-key"
         );
     }

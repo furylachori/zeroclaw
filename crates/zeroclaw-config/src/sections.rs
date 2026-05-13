@@ -423,15 +423,11 @@ mod tests {
     #[test]
     fn wizard_index_returns_none_for_explorer_only_sections() {
         let explorer = [
-            Section::PeerGroups,
             Section::Storage,
             Section::Cron,
             Section::Mcp,
             Section::McpBundles,
             Section::KnowledgeBundles,
-            Section::SkillBundles,
-            Section::RiskProfiles,
-            Section::RuntimeProfiles,
         ];
         for s in explorer {
             assert_eq!(
@@ -454,26 +450,28 @@ mod tests {
     /// (`peer_groups`); both must parse to the same variant.
     #[test]
     fn dashboard_url_sections_round_trip_kebab_and_snake() {
-        let kebab_then_snake: &[(&str, &str, Section)] = &[
-            ("peer-groups", "peer_groups", Section::PeerGroups),
-            ("mcp-bundles", "mcp_bundles", Section::McpBundles),
+        let kebab_then_snake: &[(&str, &str, Section, bool)] = &[
+            ("peer-groups", "peer_groups", Section::PeerGroups, true),
+            ("mcp-bundles", "mcp_bundles", Section::McpBundles, false),
             (
                 "knowledge-bundles",
                 "knowledge_bundles",
                 Section::KnowledgeBundles,
+                false,
             ),
-            ("skill-bundles", "skill_bundles", Section::SkillBundles),
-            ("risk-profiles", "risk_profiles", Section::RiskProfiles),
+            ("skill-bundles", "skill_bundles", Section::SkillBundles, true),
+            ("risk-profiles", "risk_profiles", Section::RiskProfiles, true),
             (
                 "runtime-profiles",
                 "runtime_profiles",
                 Section::RuntimeProfiles,
+                true,
             ),
-            ("storage", "storage", Section::Storage),
-            ("cron", "cron", Section::Cron),
-            ("mcp", "mcp", Section::Mcp),
+            ("storage", "storage", Section::Storage, false),
+            ("cron", "cron", Section::Cron, false),
+            ("mcp", "mcp", Section::Mcp, false),
         ];
-        for (kebab, snake, expected) in kebab_then_snake {
+        for (kebab, snake, expected, is_wizard) in kebab_then_snake {
             assert_eq!(
                 Section::from_key(kebab),
                 Some(*expected),
@@ -484,14 +482,15 @@ mod tests {
                 Some(*expected),
                 "snake `{snake}` should resolve to {expected:?}",
             );
-            // Explorer-only sections must NOT appear in the wizard order.
-            assert!(
-                !expected.is_wizard_step(),
-                "{expected:?} is explorer-only and must not be marked wizard_step",
+            assert_eq!(
+                expected.is_wizard_step(),
+                *is_wizard,
+                "{expected:?} wizard_step contract mismatch",
             );
-            assert!(
-                !ONBOARDING_WIZARD.contains(expected),
-                "{expected:?} must not appear in ONBOARDING_WIZARD",
+            assert_eq!(
+                ONBOARDING_WIZARD.contains(expected),
+                *is_wizard,
+                "{expected:?} ONBOARDING_WIZARD membership mismatch",
             );
         }
     }
