@@ -13,9 +13,23 @@ use std::time::{Duration, SystemTime};
 use zip::ZipArchive;
 
 pub mod audit;
+pub mod bundle;
+pub mod constants;
 pub mod creator;
+pub mod document;
+pub mod frontmatter;
 pub mod improver;
+pub mod reference;
+pub mod scaffold;
+pub mod service;
 pub mod testing;
+
+pub use bundle::{BundleError, BundleSummary};
+pub use document::{DocumentParseError, SkillDocument};
+pub use frontmatter::SkillFrontmatter;
+pub use reference::{SkillRef, SkillRefError};
+pub use scaffold::{ScaffoldError, ScaffoldOptions};
+pub use service::{RemoveMode, ServiceError, SkillSummary, SkillsService};
 
 const OPEN_SKILLS_REPO_URL: &str = "https://github.com/besoeasy/open-skills";
 const OPEN_SKILLS_SYNC_MARKER: &str = ".zeroclaw-open-skills-sync";
