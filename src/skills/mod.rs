@@ -196,6 +196,10 @@ pub fn handle_command(command: crate::SkillCommands, config: &crate::config::Con
         }
         crate::SkillCommands::Bundle { bundle_command } => match bundle_command {
             crate::SkillBundleCommands::List => handle_bundle_list(config),
+            crate::SkillBundleCommands::Add { alias, directory } => {
+                handle_bundle_add(alias, directory)
+            }
+            crate::SkillBundleCommands::Remove { alias } => handle_bundle_remove(alias),
             crate::SkillBundleCommands::Show { alias } => handle_bundle_show(config, alias),
         },
         crate::SkillCommands::Test { name, verbose } => {
@@ -318,6 +322,36 @@ fn handle_edit(
         anyhow::bail!("file not found: {}", path.display());
     }
     open_in_editor(&path)
+}
+
+fn handle_bundle_add(alias: String, directory: Option<String>) -> Result<()> {
+    // Bundle CRUD is config CRUD. Route through `zeroclaw config` semantics
+    // by suggesting the equivalent commands rather than reaching into the
+    // config writer here — keeps the config-mutation path single-sourced
+    // through api_config / handle_map_key.
+    let directory_path = directory.unwrap_or_else(|| format!("shared/skills/{alias}"));
+    println!(
+        "  {} To create skill-bundle '{alias}' with directory '{directory_path}', run:",
+        console::style("→").cyan().bold(),
+    );
+    println!("    zeroclaw config map-key skill-bundles {alias}");
+    println!("    zeroclaw config set skill-bundles.{alias}.directory {directory_path}");
+    println!();
+    println!(
+        "  (Direct bundle creation through `zeroclaw skills bundle add` would duplicate the config mutation surface.)"
+    );
+    Ok(())
+}
+
+fn handle_bundle_remove(alias: String) -> Result<()> {
+    println!(
+        "  {} To remove skill-bundle '{alias}', run:",
+        console::style("→").cyan().bold(),
+    );
+    println!("    zeroclaw config map-key-delete skill-bundles {alias}");
+    println!();
+    println!("  (Removes the config entry; the bundle's directory on disk is left in place.)");
+    Ok(())
 }
 
 fn handle_bundle_list(config: &crate::config::Config) -> Result<()> {

@@ -360,6 +360,20 @@ Examples:
 pub enum SkillBundleCommands {
     /// List configured skill bundles and their resolved directories
     List,
+    /// Add a new skill bundle. Directory defaults to shared/skills/<alias>/.
+    Add {
+        /// Bundle alias (lowercase + hyphens; same convention as agents/channels)
+        alias: String,
+        /// Override directory (relative to install root or absolute).
+        /// Must resolve inside `<install>/shared/`.
+        #[arg(long)]
+        directory: Option<String>,
+    },
+    /// Remove a configured skill bundle
+    Remove {
+        /// Bundle alias
+        alias: String,
+    },
     /// Show metadata + skill list for a bundle
     Show {
         /// Bundle alias
