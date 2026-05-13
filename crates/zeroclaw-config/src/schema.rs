@@ -13050,6 +13050,24 @@ impl Config {
             // Set computed paths that are skipped during serialization
             config.config_path = config_path.clone();
             config.data_dir = workspace_dir;
+
+            // Ensure each configured skill-bundle's resolved directory
+            // exists on disk so the bundle has somewhere for skills to
+            // land immediately. Idempotent.
+            let install_root = config.install_root_dir();
+            for alias in config.skill_bundles.keys().cloned().collect::<Vec<_>>() {
+                if let Ok(dir) =
+                    crate::skill_bundles::resolve_directory(&config, &install_root, &alias)
+                {
+                    if let Err(e) = std::fs::create_dir_all(&dir) {
+                        tracing::warn!(
+                            "skill-bundle '{alias}' directory creation failed at {}: {e}",
+                            dir.display(),
+                        );
+                    }
+                }
+            }
+
             let store = crate::secrets::SecretStore::new(&zeroclaw_dir, config.secrets.encrypt);
             // Decrypt all #[secret]-annotated fields via Configurable derive
             config.decrypt_secrets(&store)?;

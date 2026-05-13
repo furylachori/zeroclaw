@@ -36,7 +36,6 @@ import {
   type ListResponseEntry,
   type ObjectArrayPropMeta,
   type PatchOp,
-  type ValidationWarning,
 } from '../../lib/api';
 import { useConfigDraft } from '../../lib/draftStore';
 import { fuzzyFilter } from '../../lib/fuzzy';
@@ -328,11 +327,6 @@ const FieldForm = forwardRef<FieldFormHandle, FieldFormProps>(function FieldForm
   const [fieldErrors, setFieldErrors] = useState<Record<string, ConfigApiError>>({});
   const [topError, setTopError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
-  // Non-fatal validation warnings echoed by the gateway after save.
-  // Surfaced inline so dashboard users see what CLI users see on stderr —
-  // e.g. `providers.fallback` referencing a non-existent provider returns
-  // 200 (the value saved) plus a warning the user needs to address.
-  const [warnings, setWarnings] = useState<ValidationWarning[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [schema, setSchema] = useState<Record<string, unknown> | undefined>(undefined);
@@ -389,7 +383,6 @@ const FieldForm = forwardRef<FieldFormHandle, FieldFormProps>(function FieldForm
     setSavedAt(null);
     setTopError(null);
     setFieldErrors({});
-    setWarnings([]);
 
     const ops: PatchOp[] = [];
     const parseStringArrayValue = (e: ListResponseEntry, raw: string): unknown => {
@@ -452,7 +445,6 @@ const FieldForm = forwardRef<FieldFormHandle, FieldFormProps>(function FieldForm
     try {
       const resp = await patchConfig(ops);
       setSavedAt(`Saved ${resp.results.length} field(s).`);
-      setWarnings(resp.warnings ?? []);
       configDraft.discardSection(prefix);
       await reload();
       onSaved?.();
@@ -559,11 +551,11 @@ const FieldForm = forwardRef<FieldFormHandle, FieldFormProps>(function FieldForm
   }
 
   return (
-    <div className="flex flex-col gap-4 pb-20 min-h-full">
-      {/* min-h-full stretches the form to fill the scroll area so the
-          sticky save bar anchors to the viewport bottom even when the
-          field list is short. pb-20 reserves space so the last field
-          isn't covered by the bar. */}
+    <div className="flex flex-col gap-4 pb-20 flex-1 min-h-full">
+      {/* flex-1 + min-h-full stretches the form to fill the scroll area so
+          the sticky save bar anchors to the viewport bottom even with a
+          short field list. pb-20 reserves room so the last field isn't
+          covered. */}
       {title && (
         <h2
           className="text-lg font-semibold"
@@ -671,32 +663,6 @@ const FieldForm = forwardRef<FieldFormHandle, FieldFormProps>(function FieldForm
             background: 'color-mix(in srgb, var(--pc-bg-base) 88%, transparent)',
           }}
         >
-          {/* Warnings echoed by the gateway after a successful save —
-              e.g. `providers.fallback` references a non-existent provider.
-              The save committed (no error), but the operator needs to act
-              on the warning before the config will work at runtime. */}
-          {warnings.length > 0 && (
-            <div
-              className="mb-2 rounded text-sm border px-3 py-2"
-              style={{
-                borderColor: 'var(--color-status-warning, #facc15)',
-                color: 'var(--color-status-warning, #facc15)',
-                background: 'color-mix(in srgb, var(--color-status-warning, #facc15) 10%, transparent)',
-              }}
-            >
-              <div className="font-medium mb-1">
-                ⚠ {warnings.length} warning{warnings.length === 1 ? '' : 's'}:
-              </div>
-              <ul className="list-disc pl-5 space-y-1">
-                {warnings.map((w) => (
-                  <li key={`${w.code}:${w.path}`}>
-                    <span className="font-mono text-xs opacity-80">[{w.code}]</span>{' '}
-                    {w.message}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
           <div className="flex items-center justify-between gap-3">
             <div className="flex-1 min-w-0 text-sm">
               {topError ? (

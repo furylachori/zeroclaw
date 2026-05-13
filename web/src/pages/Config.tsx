@@ -492,7 +492,7 @@ export default function Config() {
 
       <main className="flex-1 overflow-y-auto p-6">
         {activeSection && (
-          <div className="flex flex-col gap-4 max-w-3xl">
+          <div className="flex flex-col gap-4 max-w-3xl min-h-full">
             {/* Breadcrumb */}
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div
@@ -729,6 +729,13 @@ function AliasListView({
 // Per-section tab partition for top-level DirectForm sections (e.g.
 // MCP: Settings vs Servers). Returns null when the section doesn't
 // need tabs.
+// BackendPicker sections have a discriminator field that the top picker
+// sets; the settings form below excludes it to avoid the duplicate input.
+const BACKEND_PICKER_FIELD: Record<string, string> = {
+  tunnel: 'tunnel.tunnel-provider',
+  memory: 'memory.backend',
+};
+
 function sectionTabsForDirectForm(
   sectionKey: string,
   ctx: {
@@ -960,6 +967,12 @@ function SectionOverview({
   // hygiene, etc.) inline.
   const isBackendPicker = section.shape === 'backend_picker';
   if (isBackendPicker) {
+    // The discriminator field is the picker; rendering it again in the
+    // settings form below is a duplicate input that confuses users.
+    const pickerPath = BACKEND_PICKER_FIELD[section.key];
+    const excludePicker = pickerPath
+      ? (path: string) => path !== pickerPath
+      : undefined;
     return (
       <div className="flex flex-col gap-4">
         <SectionPicker
@@ -971,6 +984,7 @@ function SectionOverview({
           key={`${section.key}-fields`}
           prefix={section.key}
           title={`${section.label} settings`}
+          includePath={excludePicker}
         />
       </div>
     );

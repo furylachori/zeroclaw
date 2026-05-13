@@ -919,6 +919,23 @@ pub async fn handle_map_key(
     };
 
     if created {
+        // skill-bundles: materialize the bundle's resolved directory so
+        // skills have a home immediately. Run before persist so a failed
+        // mkdir surfaces in logs alongside the config write.
+        if path == "skill-bundles" || path == "skill_bundles" {
+            let install_root = working.install_root_dir();
+            if let Ok(dir) =
+                zeroclaw_config::skill_bundles::resolve_directory(&working, &install_root, &key)
+            {
+                if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+                    tracing::warn!(
+                        "skill-bundle '{key}' directory creation failed at {}: {e}",
+                        dir.display(),
+                    );
+                }
+            }
+        }
+
         working.mark_dirty(&format!("{path}.{key}"));
         if let Err(e) = persist_and_swap(&state, working).await {
             return error_response(e);
