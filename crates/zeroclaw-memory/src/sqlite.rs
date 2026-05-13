@@ -1283,6 +1283,22 @@ impl Memory for SqliteMemory {
         .await?
     }
 
+    async fn purge_agent(&self, agent_alias: &str) -> anyhow::Result<usize> {
+        let conn = self.conn.clone();
+        let agent_alias = agent_alias.to_string();
+
+        tokio::task::spawn_blocking(move || -> anyhow::Result<usize> {
+            let conn = conn.lock();
+            let affected = conn.execute(
+                "DELETE FROM memories WHERE agent_id = ?1",
+                params![agent_alias],
+            )?;
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            Ok(affected)
+        })
+        .await?
+    }
+
     async fn count(&self) -> anyhow::Result<usize> {
         let conn = self.conn.clone();
 

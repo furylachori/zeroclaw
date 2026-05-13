@@ -193,6 +193,17 @@ pub trait Memory: Send + Sync {
         anyhow::bail!("purge_session not supported by this memory backend")
     }
 
+    /// Remove every memory row attributed to the given agent alias.
+    /// Returns the number of deleted entries. Called when an agent alias is
+    /// removed from `[agents.<alias>]` so the database doesn't accumulate
+    /// rows for retired aliases.
+    /// Default: returns unsupported error. Backends with per-agent storage
+    /// (sqlite, postgres) override this; backends without (markdown, none)
+    /// keep the default and the caller logs a warning.
+    async fn purge_agent(&self, _agent_alias: &str) -> anyhow::Result<usize> {
+        anyhow::bail!("purge_agent not supported by this memory backend")
+    }
+
     /// Count total memories
     async fn count(&self) -> anyhow::Result<usize>;
 

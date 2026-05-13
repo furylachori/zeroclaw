@@ -828,8 +828,9 @@ pub async fn handle_delete_map_key(
         // Agent alias removal archives `agents/<alias>/workspace/` to
         // `agents/_deleted/<alias>-<ts>/` rather than rm -rf. The
         // workspace may contain operator notes, IDENTITY.md edits, etc.
-        // Memory database rows are NOT touched here; that needs the
-        // storage adapter's per-agent delete which lives elsewhere.
+        // Memory database rows for the alias are also purged through
+        // the storage adapter so a future reuse of the same alias
+        // doesn't inherit stale rows.
         if q.path == "agents" {
             let workspace = working.agent_workspace_dir(&q.key);
             if workspace.exists()
@@ -858,6 +859,18 @@ pub async fn handle_delete_map_key(
                         "agent workspace archived after alias removal",
                     );
                 }
+            }
+            match state.mem.purge_agent(&q.key).await {
+                Ok(rows) if rows > 0 => tracing::info!(
+                    agent = %q.key,
+                    rows,
+                    "agent memory rows purged after alias removal",
+                ),
+                Ok(_) => {}
+                Err(err) => tracing::warn!(
+                    agent = %q.key,
+                    "purge_agent failed (backend may not support it): {err}",
+                ),
             }
         }
         working.mark_dirty(&format!("{}.{}", q.path, q.key));
