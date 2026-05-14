@@ -319,9 +319,13 @@ mod tests {
     fn unmapped_events_are_skipped() {
         let (obs, mut rx, buffer) = make_broadcast();
 
-        obs.record_event(&ObserverEvent::HeartbeatTick);
+        // HandStarted is intentionally not in BroadcastObserver's match arms;
+        // it falls through to `_ => return` and must never reach the SSE stream.
+        obs.record_event(&ObserverEvent::HandStarted {
+            hand_name: "review".into(),
+        });
 
-        assert!(rx.try_recv().is_err(), "heartbeat should not broadcast");
+        assert!(rx.try_recv().is_err(), "HandStarted should not broadcast");
         assert!(buffer.snapshot().is_empty());
     }
 
