@@ -518,11 +518,13 @@ impl CompatFamilySpec for GlmModelProviderConfig {
         key: Option<&str>,
         api_url: Option<&str>,
     ) -> OpenAiCompatibleModelProvider {
-        OpenAiCompatibleModelProvider::new(
+        // GLM exposes vision-capable models (e.g. `glm-4.5v`).
+        OpenAiCompatibleModelProvider::new_with_vision(
             Self::DISPLAY,
             api_url.unwrap_or(Self::DEFAULT_URL),
             key,
             Self::AUTH,
+            true,
         )
     }
 }

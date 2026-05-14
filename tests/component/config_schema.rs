@@ -79,7 +79,7 @@ default_temperature = "hot"
 fn config_out_of_range_temperature_fails() {
     // Temperature validation now happens at the model_provider level.
     let toml_str = r#"
-[model_providers.openai.default]
+[providers.models.openai.default]
 temperature = 99.0
 "#;
     let config: Config = toml::from_str(toml_str).expect("parses");
@@ -98,7 +98,7 @@ temperature = 99.0
 #[test]
 fn config_negative_temperature_fails() {
     let toml_str = r#"
-[model_providers.openai.default]
+[providers.models.openai.default]
 temperature = -0.5
 "#;
     let config: Config = toml::from_str(toml_str).expect("parses");

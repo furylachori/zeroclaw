@@ -188,6 +188,7 @@ pub async fn handle_api_status(
         };
 
     let body = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
         "model_provider": model_provider,
         "model": model,
         "temperature": temperature,

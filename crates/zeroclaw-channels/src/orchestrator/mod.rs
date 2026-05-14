@@ -468,7 +468,11 @@ pub fn conversation_history_key(msg: &zeroclaw_api::channel::ChannelMessage) -> 
 }
 
 fn followup_thread_id(msg: &zeroclaw_api::channel::ChannelMessage) -> Option<String> {
-    msg.thread_ts.clone().or_else(|| Some(msg.id.clone()))
+    if is_matrix_channel_name(&msg.channel) {
+        msg.thread_ts.clone()
+    } else {
+        msg.thread_ts.clone().or_else(|| Some(msg.id.clone()))
+    }
 }
 
 fn interruption_scope_key(msg: &zeroclaw_api::channel::ChannelMessage) -> String {
@@ -620,6 +624,15 @@ fn channel_delivery_instructions(channel_name: &str) -> Option<&'static str> {
              - Keep normal text outside markers and never wrap markers in code fences.\n\
              - When you receive a [Voice message], the user spoke to you. Respond naturally as in conversation.\n\
              - Your text reply will automatically be converted to audio and sent back as a voice message.\n",
+        ),
+        "discord" => Some(
+            "When responding on Discord:\n\
+             - Use Markdown formatting (bold, italic, code blocks)\n\
+             - Be concise and direct\n\
+             - For media attachments use markers: [IMAGE:<absolute-path>], [DOCUMENT:<absolute-path>], [VIDEO:<absolute-path>], [AUDIO:<absolute-path>], or [VOICE:<absolute-path>]\n\
+             - Paths inside markers MUST be absolute (starting with /) and live inside the configured workspace directory. Never use relative paths.\n\
+             - Remote media is also accepted via http:// or https:// URLs in the same marker form.\n\
+             - Keep normal text outside markers and never wrap markers in code fences.\n",
         ),
         "telegram" => Some(
             "When responding on Telegram:\n\
@@ -788,6 +801,10 @@ fn strip_tool_summary_prefix(text: &str) -> String {
 
 fn supports_runtime_model_switch(channel_name: &str) -> bool {
     matches!(channel_name, "telegram" | "discord" | "matrix" | "slack")
+}
+
+fn is_matrix_channel_name(channel_name: &str) -> bool {
+    channel_name == "matrix" || channel_name.starts_with("matrix:")
 }
 
 fn parse_runtime_command(channel_name: &str, content: &str) -> Option<ChannelRuntimeCommand> {
@@ -11793,6 +11810,71 @@ BTC is currently around $65,000 based on latest tool output."#
     }
 
     #[test]
+    fn followup_thread_id_does_not_open_matrix_thread_for_root_message() {
+        let msg = zeroclaw_api::channel::ChannelMessage {
+            id: "$event:server".into(),
+            sender: "@alice:server".into(),
+            reply_target: "!room:server".into(),
+            content: "hello".into(),
+            channel: "matrix".into(),
+            channel_alias: None,
+            timestamp: 1,
+            thread_ts: None,
+            interruption_scope_id: None,
+            attachments: vec![],
+        };
+
+        assert_eq!(followup_thread_id(&msg), None);
+    }
+
+    #[test]
+    fn matrix_root_conversation_history_key_omits_event_id() {
+        let first = zeroclaw_api::channel::ChannelMessage {
+            id: "$first:server".into(),
+            sender: "@alice:server".into(),
+            reply_target: "!room:server".into(),
+            content: "send a.txt".into(),
+            channel: "matrix".into(),
+            channel_alias: None,
+            timestamp: 1,
+            thread_ts: None,
+            interruption_scope_id: None,
+            attachments: vec![],
+        };
+        let second = zeroclaw_api::channel::ChannelMessage {
+            id: "$second:server".into(),
+            content: "send it again".into(),
+            timestamp: 2,
+            ..first.clone()
+        };
+
+        let key = conversation_history_key(&first);
+        assert_eq!(key, conversation_history_key(&second));
+        assert!(!key.contains("$first:server"));
+        assert!(!key.contains("$second:server"));
+    }
+
+    #[test]
+    fn matrix_thread_conversation_history_key_uses_thread_root() {
+        let msg = zeroclaw_api::channel::ChannelMessage {
+            id: "$reply:server".into(),
+            sender: "@alice:server".into(),
+            reply_target: "!room:server".into(),
+            content: "thread reply".into(),
+            channel: "matrix".into(),
+            channel_alias: None,
+            timestamp: 1,
+            thread_ts: Some("$root:server".into()),
+            interruption_scope_id: Some("$root:server".into()),
+            attachments: vec![],
+        };
+
+        let key = conversation_history_key(&msg);
+        assert!(key.contains("$root:server"));
+        assert!(!key.contains("$reply:server"));
+    }
+
+    #[test]
     fn conversation_memory_key_is_unique_per_message() {
         let msg1 = zeroclaw_api::channel::ChannelMessage {
             id: "msg_1".into(),
@@ -12615,6 +12697,32 @@ BTC is currently around $65,000 based on latest tool output."#
             "telegram media marker guidance should live in the system prompt"
         );
         assert!(!calls[0].iter().skip(1).any(|(role, _)| role == "system"));
+    }
+
+    #[test]
+    fn channel_delivery_instructions_for_discord_mandates_absolute_paths() {
+        let block = channel_delivery_instructions("discord")
+            .expect("discord channel must have a delivery-instructions block");
+        assert!(
+            block.contains("When responding on Discord:"),
+            "discord block must identify itself"
+        );
+        assert!(
+            block.contains("For media attachments use markers:"),
+            "discord block must describe marker syntax"
+        );
+        assert!(
+            block.contains("MUST be absolute"),
+            "discord block must mandate absolute paths"
+        );
+        assert!(
+            block.contains("workspace"),
+            "discord block must reference workspace bounds"
+        );
+        assert!(
+            block.contains("[IMAGE:<absolute-path>]"),
+            "discord block must show the absolute-path marker form"
+        );
     }
 
     #[test]

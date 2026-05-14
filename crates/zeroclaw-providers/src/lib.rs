@@ -1745,6 +1745,19 @@ mod tests {
     use super::test_util::{EnvGuard, env_lock};
     use super::*;
 
+    // Compile-time proof that both reqwest TLS-root features are enabled.
+    // `tls_built_in_webpki_certs` is gated on `rustls-tls-webpki-roots-no-provider`;
+    // `tls_built_in_native_certs` is gated on `rustls-tls-native-roots-no-provider`.
+    // If either feature were dropped, this test would fail to compile.
+    #[test]
+    fn provider_http_client_trusts_both_webpki_and_native_roots() {
+        let _client = reqwest::Client::builder()
+            .tls_built_in_webpki_certs(true)
+            .tls_built_in_native_certs(true)
+            .build()
+            .expect("client builder should succeed with both root sets enabled");
+    }
+
     #[test]
     fn resolve_provider_credential_returns_trimmed_override() {
         let resolved = resolve_model_provider_credential("openrouter", Some("  explicit-key  "));
@@ -1999,6 +2012,21 @@ mod tests {
     }
 
     #[test]
+    fn glm_provider_supports_vision() {
+        // GLM exposes vision-capable models (e.g. `glm-4.5v`). The provider
+        // must therefore report `supports_vision()` so multimodal routing
+        // can target it; the model field selects the actual variant.
+        for alias in ["glm", "zhipu", "glm-cn", "zhipu-cn"] {
+            let provider =
+                create_model_provider(alias, Some("id.secret")).expect("glm provider should build");
+            assert!(
+                provider.supports_vision(),
+                "alias `{alias}` should report vision capability"
+            );
+        }
+    }
+
+    #[test]
     fn factory_lmstudio() {
         assert!(create_model_provider("lmstudio", Some("key")).is_ok());
         assert!(create_model_provider("lmstudio", None).is_ok());
@@ -2074,7 +2102,7 @@ mod tests {
     #[test]
     fn factory_codex_dispatches_via_requires_openai_auth_flag() {
         // Codex selection: the typed alias's `base.requires_openai_auth`
-        // routes through `OpenAIModelProviderConfig::create_provider`. The
+        // routes through `OpenAIModelProviderConfig::create_model_provider`. The
         // legacy escape hatch on the bare "openai-codex" / "openai_codex" /
         // "codex" family names remains for callers without Config context
         // (this test).
@@ -2729,7 +2757,7 @@ mod tests {
     fn ollama_alias_tuning_fields_populate_tuning_struct() {
         // Per-alias Ollama knobs live on `OllamaModelProviderConfig`
         // (not on the generic `ModelProviderRuntimeOptions`). The
-        // factory's `create_provider` impl reads them off `&self` and
+        // factory's `create_model_provider` impl reads them off `&self` and
         // builds `OllamaTuning` from there. Mirror that derivation
         // here so the three fields are covered without exercising the
         // factory dispatch.
