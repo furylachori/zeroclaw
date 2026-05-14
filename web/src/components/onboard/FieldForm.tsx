@@ -40,6 +40,11 @@ import {
 } from '../../lib/api';
 import { useConfigDraft } from '../../lib/draftStore';
 import { fuzzyFilter } from '../../lib/fuzzy';
+import EntityEnabledToggle from '../EntityEnabledToggle';
+
+function entryValue(entry: ListResponseEntry): unknown {
+  return entry.populated ? entry.value : undefined;
+}
 
 interface FieldFormProps {
   /** Dotted prefix to fetch fields under, e.g. `model_providers.anthropic`. */
@@ -503,17 +508,25 @@ const FieldForm = forwardRef<FieldFormHandle, FieldFormProps>(function FieldForm
     });
   }, [entries]);
 
-  // Fuzzy-filter against the short label + dotted path; sections with
-  // a lot of fields (Agent, Channels) are otherwise a wall of inputs.
-  // Empty query falls through to the full sorted list. Matches the
-  // pattern SectionPicker uses so behavior is consistent across views.
+  // The entity-gate `enabled` bool gets hoisted into the title row as a
+  // pill toggle. Hide it from the field list so it isn't editable in two
+  // places at once.
+  const enabledEntry = useMemo(
+    () =>
+      entries.find(
+        (e) => e.path === `${prefix}.enabled` && e.kind === 'bool',
+      ) ?? null,
+    [entries, prefix],
+  );
+
   const visibleEntries = useMemo(() => {
-    const filtered = includePath
-      ? sortedEntries.filter((e) => includePath(e.path))
+    const base = enabledEntry
+      ? sortedEntries.filter((e) => e.path !== enabledEntry.path)
       : sortedEntries;
+    const filtered = includePath ? base.filter((e) => includePath(e.path)) : base;
     if (!filter.trim()) return filtered;
     return fuzzyFilter(filtered, filter, (e) => `${fieldShortLabel(e)} ${e.path}`);
-  }, [sortedEntries, filter, includePath]);
+  }, [sortedEntries, filter, includePath, enabledEntry]);
 
   // Count of fields whose draft value differs from the saved display value.
   // Drives the unsaved-changes counter in the sticky save bar. Must be
@@ -564,21 +577,40 @@ const FieldForm = forwardRef<FieldFormHandle, FieldFormProps>(function FieldForm
           the sticky save bar anchors to the viewport bottom even with a
           short field list. pb-20 reserves room so the last field isn't
           covered. */}
-      {title && (
-        <h2
-          className="text-lg font-semibold"
-          style={{ color: 'var(--pc-text-primary)' }}
-        >
-          {title}
-        </h2>
+      {(title || enabledEntry) && (
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          {title ? (
+            <h2
+              className="text-lg font-semibold"
+              style={{ color: 'var(--pc-text-primary)' }}
+            >
+              {title}
+            </h2>
+          ) : <span />}
+          {enabledEntry && (
+            <EntityEnabledToggle
+              prefix={prefix}
+              enabled={Boolean(entryValue(enabledEntry))}
+              onChange={(next) => {
+                setEntries((prev) =>
+                  prev.map((e) =>
+                    e.path === enabledEntry.path
+                      ? { ...e, value: next, populated: true }
+                      : e,
+                  ),
+                );
+              }}
+            />
+          )}
+        </div>
       )}
 
-      {entries.length > 1 && (
+      {visibleEntries.length > 1 && (
         <input
           type="text"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder={`Filter ${entries.length} fields — fuzzy match on name or path`}
+          placeholder={`Filter ${visibleEntries.length} fields — fuzzy match on name or path`}
           className="input-electric w-full px-3 py-2 text-sm"
           aria-label="Filter fields"
         />
