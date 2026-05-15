@@ -2562,61 +2562,65 @@ fn spawn_supervised_listener_with_health_interval(
         health_interval
     };
 
-    tokio::spawn(async move {
-        // Per-alias component name so the health snapshot exposes one row
-        // per `[channels.<type>.<alias>]` block. Previously every alias of
-        // a type collapsed onto `channel:<type>` and the entries raced.
-        let component = match alias.as_deref() {
-            Some(a) if !a.is_empty() => format!("channel:{}.{}", ch.name(), a),
-            _ => format!("channel:{}", ch.name()),
-        };
-        let mut backoff = initial_backoff_secs.max(1);
-        let max_backoff = max_backoff_secs.max(backoff);
+    use tracing::Instrument;
+    let composite = match alias.as_deref() {
+        Some(a) if !a.is_empty() => format!("{}.{}", ch.name(), a),
+        _ => ch.name().to_string(),
+    };
+    let span = tracing::info_span!(
+        "channel_listener",
+        channel = %composite,
+    );
+    tokio::spawn(
+        async move {
+            let component = format!("channel:{composite}");
+            let mut backoff = initial_backoff_secs.max(1);
+            let max_backoff = max_backoff_secs.max(backoff);
 
-        loop {
-            zeroclaw_runtime::health::mark_component_ok(&component);
-            let mut health = tokio::time::interval(health_interval);
-            health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let result = {
-                let listen_future = ch.listen(tx.clone());
-                tokio::pin!(listen_future);
+            loop {
+                zeroclaw_runtime::health::mark_component_ok(&component);
+                let mut health = tokio::time::interval(health_interval);
+                health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let result = {
+                    let listen_future = ch.listen(tx.clone());
+                    tokio::pin!(listen_future);
 
-                loop {
-                    tokio::select! {
-                        () = cancel.cancelled() => return,
-                        _ = health.tick() => {
-                            zeroclaw_runtime::health::mark_component_ok(&component);
+                    loop {
+                        tokio::select! {
+                            () = cancel.cancelled() => return,
+                            _ = health.tick() => {
+                                zeroclaw_runtime::health::mark_component_ok(&component);
+                            }
+                            result = &mut listen_future => break result,
                         }
-                        result = &mut listen_future => break result,
+                    }
+                };
+
+                match result {
+                    Ok(()) => {
+                        tracing::warn!("Channel {} exited unexpectedly; restarting", ch.name());
+                        zeroclaw_runtime::health::mark_component_error(
+                            &component,
+                            "listener exited unexpectedly",
+                        );
+                        backoff = initial_backoff_secs.max(1);
+                    }
+                    Err(e) => {
+                        tracing::error!("Channel {} error: {e}; restarting", ch.name());
+                        zeroclaw_runtime::health::mark_component_error(&component, e.to_string());
                     }
                 }
-            };
 
-            match result {
-                Ok(()) => {
-                    tracing::warn!("Channel {} exited unexpectedly; restarting", ch.name());
-                    zeroclaw_runtime::health::mark_component_error(
-                        &component,
-                        "listener exited unexpectedly",
-                    );
-                    // Clean exit — reset backoff since the listener ran successfully
-                    backoff = initial_backoff_secs.max(1);
+                zeroclaw_runtime::health::bump_component_restart(&component);
+                tokio::select! {
+                    () = cancel.cancelled() => return,
+                    () = tokio::time::sleep(Duration::from_secs(backoff)) => {}
                 }
-                Err(e) => {
-                    tracing::error!("Channel {} error: {e}; restarting", ch.name());
-                    zeroclaw_runtime::health::mark_component_error(&component, e.to_string());
-                }
+                backoff = backoff.saturating_mul(2).min(max_backoff);
             }
-
-            zeroclaw_runtime::health::bump_component_restart(&component);
-            tokio::select! {
-                () = cancel.cancelled() => return,
-                () = tokio::time::sleep(Duration::from_secs(backoff)) => {}
-            }
-            // Double backoff AFTER sleeping so first error uses initial_backoff
-            backoff = backoff.saturating_mul(2).min(max_backoff);
         }
-    })
+        .instrument(span),
+    )
 }
 
 fn compute_max_in_flight_messages(channel_count: usize) -> usize {
@@ -2731,7 +2735,7 @@ async fn process_channel_message(
         let enriched = link_enricher::enrich_message(&msg.content, &enricher_cfg).await;
         if enriched != msg.content {
             tracing::info!(
-                channel = %msg.channel,
+                channel = %channel_composite,
                 sender = %msg.sender,
                 "Link enricher: prepended URL summaries to message"
             );
@@ -2756,7 +2760,7 @@ async fn process_channel_message(
     if let Some(channel) = target_channel.as_ref() {
         if channel.drop_self_messages(&msg) {
             tracing::debug!(
-                channel = %msg.channel,
+                channel = %channel_composite,
                 sender = %msg.sender,
                 "dropping self-authored inbound message (self-loop guard, sdk layer)"
             );
@@ -2767,7 +2771,7 @@ async fn process_channel_message(
             channel.self_handle().as_deref(),
         ) {
             tracing::debug!(
-                channel = %msg.channel,
+                channel = %channel_composite,
                 sender = %msg.sender,
                 "dropping self-authored inbound message (self-loop guard, agent-loop fallback)"
             );
@@ -2807,7 +2811,7 @@ async fn process_channel_message(
         };
         if let Err(e) = store.set_session_context(&history_key, context) {
             tracing::warn!(
-                channel = %msg.channel,
+                channel = %channel_composite,
                 history_key = %history_key,
                 "Failed to stamp session routing context: {e}"
             );
@@ -2828,7 +2832,7 @@ async fn process_channel_message(
             hint = hint.as_str(),
             model_provider = matched_route.model_provider.as_str(),
             model = matched_route.model.as_str(),
-            channel = %msg.channel,
+            channel = %channel_composite,
             "Channel message classified — overriding route"
         );
         route = ChannelRouteSelection {
@@ -2880,7 +2884,7 @@ async fn process_channel_message(
             .await;
     }
 
-    println!("  ⏳ Processing message...");
+    tracing::info!(message_id = %msg.id, "processing inbound message");
     let started_at = Instant::now();
 
     let force_fresh_session = take_pending_new_session(ctx.as_ref(), &history_key);
@@ -2962,7 +2966,7 @@ async fn process_channel_message(
     let dropped = proactive_trim_turns(&mut prior_turns, PROACTIVE_CONTEXT_BUDGET_CHARS);
     if dropped > 0 {
         tracing::info!(
-            channel = %msg.channel,
+            channel = %channel_composite,
             sender = %msg.sender,
             dropped_turns = dropped,
             remaining_turns = prior_turns.len(),
@@ -3002,7 +3006,7 @@ async fn process_channel_message(
         mem_recall_ms,
         sender_empty = sender_memory.is_empty(),
         group_empty = group_memory.is_empty(),
-        "⏱ Memory recall completed"
+        "memory recall completed"
     );
 
     // Merge sender and group memory context blocks.
@@ -3055,7 +3059,7 @@ async fn process_channel_message(
         {
             Ok(result) if result.compressed => {
                 tracing::info!(
-                    channel = %msg.channel,
+                    channel = %channel_composite,
                     sender = %msg.sender,
                     tokens_before = result.tokens_before,
                     tokens_after = result.tokens_after,
@@ -3127,10 +3131,11 @@ async fn process_channel_message(
                 "kind": format!("{kind:?}"),
             }),
         );
-        println!(
-            "  🤖 No reply [{kind:?}] ({}ms): {}",
-            started_at.elapsed().as_millis(),
-            reason.as_deref().unwrap_or("no reason provided")
+        tracing::info!(
+            kind = ?kind,
+            elapsed_ms = started_at.elapsed().as_millis() as u64,
+            reason = reason.as_deref().unwrap_or("no reason provided"),
+            "no reply"
         );
         return;
     }
@@ -3140,7 +3145,7 @@ async fn process_channel_message(
         .is_some_and(|ch| ch.supports_draft_updates());
 
     tracing::debug!(
-        channel = %msg.channel,
+        channel = %channel_composite,
         has_target_channel = target_channel.is_some(),
         use_draft_streaming,
         "Streaming decision"
@@ -3306,7 +3311,7 @@ async fn process_channel_message(
     let llm_call_start = Instant::now();
     #[allow(clippy::cast_possible_truncation)]
     let elapsed_before_llm_ms = started_at.elapsed().as_millis() as u64;
-    tracing::info!(elapsed_before_llm_ms, "⏱ Starting LLM call");
+    tracing::info!(elapsed_before_llm_ms, "starting LLM call");
     // Per-turn collector. `tool_execution::execute_one_tool` pushes
     // `<tool_name>: <receipt>` here whenever a receipt is generated, so the
     // orchestrator can render the trailing `Tool receipts:` block after the
@@ -3458,7 +3463,7 @@ async fn process_channel_message(
     let llm_call_ms = llm_call_start.elapsed().as_millis() as u64;
     #[allow(clippy::cast_possible_truncation)]
     let total_ms = started_at.elapsed().as_millis() as u64;
-    tracing::info!(llm_call_ms, total_ms, "⏱ LLM call completed");
+    tracing::info!(llm_call_ms, total_ms, "LLM call completed");
 
     if let Some(token) = typing_cancellation.as_ref() {
         token.cancel();
@@ -3475,7 +3480,7 @@ async fn process_channel_message(
     match llm_result {
         LlmExecutionResult::Cancelled => {
             tracing::info!(
-                channel = %msg.channel,
+                channel = %channel_composite,
                 sender = %msg.sender,
                 "Cancelled in-flight channel request due to newer message"
             );
@@ -3527,7 +3532,7 @@ async fn process_channel_message(
                     )) => {
                         if hook_channel != msg.channel || hook_recipient != msg.reply_target {
                             tracing::warn!(
-                                from_channel = %msg.channel,
+                                from_channel = %channel_composite,
                                 from_recipient = %msg.reply_target,
                                 to_channel = %hook_channel,
                                 to_recipient = %hook_recipient,
@@ -3550,7 +3555,7 @@ async fn process_channel_message(
 
                         if modified_content != outbound_response {
                             tracing::info!(
-                                channel = %msg.channel,
+                                channel = %channel_composite,
                                 sender = %msg.sender,
                                 before_len = outbound_response.chars().count(),
                                 after_len = modified_content.chars().count(),
@@ -3656,10 +3661,10 @@ async fn process_channel_message(
                 });
             }
 
-            println!(
-                "  🤖 Reply ({}ms): {}",
-                started_at.elapsed().as_millis(),
-                truncate_with_ellipsis(&delivered_response, 80)
+            tracing::info!(
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                response = %delivered_response,
+                "reply delivered"
             );
             // Build the trailing `Tool receipts:` block from the per-turn
             // collector. Empty when receipts are disabled or no tool ran.
@@ -3706,7 +3711,7 @@ async fn process_channel_message(
                     )
                     .await
                 {
-                    eprintln!("  ❌ Failed to reply on {}: {e}", channel.name());
+                    tracing::error!(channel = %channel_composite, error = ?e, "failed to reply");
                 }
                 // Send tool receipts as a separate message in the same thread.
                 // The block is the operator-facing audit surface for the feature,
@@ -3721,8 +3726,8 @@ async fn process_channel_message(
                         .await
                 {
                     tracing::warn!(
-                        channel = channel.name(),
-                        error = %e,
+                        channel = %channel_composite,
+                        error = ?e,
                         "failed to send tool receipts block"
                     );
                 }
@@ -3733,7 +3738,7 @@ async fn process_channel_message(
                 || cancellation_token.is_cancelled()
             {
                 tracing::info!(
-                    channel = %msg.channel,
+                    channel = %channel_composite,
                     sender = %msg.sender,
                     "Cancelled in-flight channel request due to newer message"
                 );
@@ -3954,10 +3959,14 @@ async fn dispatch_worker(
         };
 
         if interrupt_enabled && let Some(previous) = previous {
+            let channel_composite = match &msg.channel_alias {
+                Some(alias) => format!("{}.{}", msg.channel, alias),
+                None => msg.channel.clone(),
+            };
             tracing::info!(
-                channel = %msg.channel,
+                channel = %channel_composite,
                 sender = %msg.sender,
-                "Interrupting previous in-flight request for sender"
+                "interrupting previous in-flight request for sender"
             );
             previous.cancellation.cancel();
             previous.completion.wait().await;
@@ -4050,12 +4059,16 @@ async fn run_message_dispatch_loop(
     let task_sequence = Arc::new(AtomicU64::new(1));
 
     while let Some(msg) = rx.recv().await {
+        let channel_composite = match &msg.channel_alias {
+            Some(alias) => format!("{}.{}", msg.channel, alias),
+            None => msg.channel.clone(),
+        };
         let Some(ctx) = router.resolve(&msg) else {
             tracing::warn!(
-                channel = %msg.channel,
+                channel = %channel_composite,
                 channel_alias = ?msg.channel_alias,
                 sender = %msg.sender,
-                "Dropping inbound message: no agent owns this channel"
+                "dropping inbound message: no agent owns this channel"
             );
             continue;
         };
@@ -4085,7 +4098,7 @@ async fn run_message_dispatch_loop(
                 });
             } else {
                 tracing::warn!(
-                    channel = %msg.channel,
+                    channel = %channel_composite,
                     "stop command: no registered channel found for reply"
                 );
             }
@@ -6722,11 +6735,12 @@ pub async fn start_channels(
             hydrated += 1;
         }
         if hydrated > 0 {
-            tracing::info!("📂 Restored {hydrated} session(s) from disk");
+            tracing::info!(hydrated, "restored sessions from disk");
         }
         if orphans_closed > 0 {
             tracing::info!(
-                "🔒 Closed {orphans_closed} orphaned session turn(s) from previous crash"
+                orphans_closed,
+                "closed orphaned session turns from previous crash"
             );
         }
     }

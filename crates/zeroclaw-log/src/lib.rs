@@ -19,7 +19,9 @@ pub mod broadcast;
 pub mod chain;
 pub mod config;
 pub mod event;
+pub mod layer;
 pub mod migrate;
+pub mod observer_bridge;
 pub mod reader;
 pub mod tool_io;
 pub mod writer;
@@ -42,7 +44,11 @@ pub use event::{
     EventCategory, EventOutcome, LogEvent, Severity, severity_text_from_number,
     severity_text_from_tracing_level,
 };
+pub use layer::{
+    AgentAliasField, ChannelContextField, CronJobIdField, LogCaptureLayer, SessionKeyField,
+};
 pub use migrate::migrate_legacy_jsonl_in_place;
+pub use observer_bridge::{clear_observer_bridge, set_observer_bridge};
 pub use reader::{LogFilter, LogPage, current_log_path, find_event_by_id, load_page};
 pub use tool_io::{ToolIoCapture, capture_tool_input, capture_tool_output};
 pub use writer::{init_from_config, record_event, runtime_trace_path};

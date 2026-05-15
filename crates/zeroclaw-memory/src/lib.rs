@@ -330,11 +330,11 @@ pub fn create_memory_with_storage_and_routes(
         )
         && snapshot::should_hydrate(workspace_dir)
     {
-        tracing::info!("🧬 Cold boot detected — hydrating from MEMORY_SNAPSHOT.md");
+        tracing::info!("cold boot detected; hydrating from MEMORY_SNAPSHOT.md");
         match snapshot::hydrate_from_snapshot(workspace_dir) {
             Ok(count) => {
                 if count > 0 {
-                    tracing::info!("🧬 Hydrated {count} core memories from snapshot");
+                    tracing::info!(count, "hydrated core memories from snapshot");
                 }
             }
             Err(e) => {

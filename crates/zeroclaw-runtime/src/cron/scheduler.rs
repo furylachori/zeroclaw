@@ -383,7 +383,8 @@ async fn run_agent_job(
 
     let subagent_span = tracing::info_span!(
         "subagent",
-        parent_alias = %subagent_ctx.parent_alias,
+        agent_alias = %agent_alias,
+        cron_job_id = %job.id,
         run_id = %run_session_id,
         spawn_site = "cron",
     );

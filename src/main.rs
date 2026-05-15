@@ -102,52 +102,7 @@ where
     }
 }
 
-/// Span extension carrying the agent_alias value extracted at
-/// span-creation time. Stored once in span extensions to avoid
-/// per-event field-walk overhead.
-#[derive(Clone)]
-struct AgentAliasField {
-    alias: String,
-}
-
-/// Layer that captures `agent_alias` field on span creation and
-/// stashes it in the span's extensions for the formatter to find.
-struct AgentAliasCaptureLayer;
-
-impl<S> tracing_subscriber::Layer<S> for AgentAliasCaptureLayer
-where
-    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
-{
-    fn on_new_span(
-        &self,
-        attrs: &tracing::span::Attributes<'_>,
-        id: &tracing::Id,
-        ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        struct AliasVisitor {
-            alias: Option<String>,
-        }
-        impl Visit for AliasVisitor {
-            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-                if field.name() == "agent_alias" || field.name() == "parent_alias" {
-                    self.alias = Some(value.to_string());
-                }
-            }
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "agent_alias" || field.name() == "parent_alias" {
-                    self.alias = Some(format!("{value:?}").trim_matches('"').to_string());
-                }
-            }
-        }
-        let mut visitor = AliasVisitor { alias: None };
-        attrs.record(&mut visitor);
-        if let Some(alias) = visitor.alias
-            && let Some(span) = ctx.span(id)
-        {
-            span.extensions_mut().insert(AgentAliasField { alias });
-        }
-    }
-}
+use zeroclaw_log::AgentAliasField;
 
 /// Decorate the value at `path` in `config.toml` with a leading `# {comment}`
 /// line, preserving any non-comment whitespace. Mirrors the gateway's
@@ -1373,7 +1328,7 @@ async fn main() -> Result<()> {
         )
         .event_format(AgentAliasFormatter::new())
         .finish()
-        .with(AgentAliasCaptureLayer);
+        .with(zeroclaw_log::LogCaptureLayer);
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 

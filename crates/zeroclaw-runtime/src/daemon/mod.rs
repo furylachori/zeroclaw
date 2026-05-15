@@ -540,7 +540,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                 Ok(response) => {
                     let indices = HeartbeatEngine::parse_decision_response(&response, tasks.len());
                     if indices.is_empty() {
-                        tracing::info!("💓 Heartbeat Phase 1: skip (nothing to do)");
+                        tracing::info!("heartbeat phase 1: skip (nothing to do)");
                         crate::health::mark_component_ok("heartbeat");
                         #[allow(clippy::cast_precision_loss)]
                         let elapsed = tick_start.elapsed().as_millis() as f64;
@@ -548,9 +548,9 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                         continue;
                     }
                     tracing::info!(
-                        "💓 Heartbeat Phase 1: run {} of {} tasks",
-                        indices.len(),
-                        tasks.len()
+                        selected = indices.len(),
+                        total = tasks.len(),
+                        "heartbeat phase 1: running task subset"
                     );
                     indices
                         .into_iter()
@@ -558,7 +558,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                         .collect()
                 }
                 Err(e) => {
-                    tracing::warn!("💓 Heartbeat Phase 1 failed, running all tasks: {e}");
+                    tracing::warn!(error = ?e, "heartbeat phase 1 failed; running all tasks");
                     tasks
                 }
             }
@@ -877,7 +877,11 @@ fn load_heartbeat_session_context(config: &Config) -> Option<String> {
         .map(|e| e.path())?;
 
     if !path.exists() {
-        tracing::debug!("💓 Heartbeat session context: no session file found for {channel}/{to}");
+        tracing::debug!(
+            channel = %channel,
+            to = %to,
+            "heartbeat session context: no session file found"
+        );
         return None;
     }
 

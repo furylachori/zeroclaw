@@ -19,6 +19,7 @@ use crate::broadcast::current_broadcast_hook;
 use crate::config::{ResolvedPolicy, StoragePolicy};
 use crate::event::LogEvent;
 use crate::migrate;
+use crate::observer_bridge;
 
 struct WriterState {
     policy: ResolvedPolicy,
@@ -77,15 +78,18 @@ pub fn record_event(event: LogEvent) {
     let value = match serde_json::to_value(&event) {
         Ok(v) => v,
         Err(err) => {
-            tracing::warn!(target: "zeroclaw_log", error = ?err, "log: event serialization failed");
+            tracing::warn!(
+                target: "zeroclaw_log_internal",
+                error = ?err,
+                "log: event serialization failed"
+            );
             return;
         }
     };
 
+    observer_bridge::forward(&event);
+
     if let Some(hook) = current_broadcast_hook() {
-        // Lagging or no-receiver senders return Err; ignore — the
-        // canonical record is the on-disk JSONL, broadcast is best-effort
-        // for live subscribers.
         let _ = hook.send(value.clone());
     }
 
@@ -98,7 +102,7 @@ pub fn record_event(event: LogEvent) {
 
     if let Err(err) = append_line(&state, &value) {
         tracing::warn!(
-            target: "zeroclaw_log",
+            target: "zeroclaw_log_internal",
             error = ?err,
             path = %state.policy.path.display(),
             "log: append failed",

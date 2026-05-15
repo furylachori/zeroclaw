@@ -1526,7 +1526,7 @@ pub async fn run_gateway(
                     });
                 }
                 _ = shutdown_signal.changed() => {
-                    tracing::info!("🦀 ZeroClaw Gateway shutting down...");
+                    tracing::info!("ZeroClaw Gateway shutting down");
                     break;
                 }
             }
@@ -1539,7 +1539,7 @@ pub async fn run_gateway(
         )
         .with_graceful_shutdown(async move {
             let _ = shutdown_rx.changed().await;
-            tracing::info!("🦀 ZeroClaw Gateway shutting down...");
+            tracing::info!("ZeroClaw Gateway shutting down");
         })
         .await?;
     }
@@ -1648,7 +1648,7 @@ async fn handle_pair(
 
     // ── Auth rate limiting (brute-force protection) ──
     if let Err(e) = state.auth_limiter.check_rate_limit(&rate_key) {
-        tracing::warn!("🔐 Pairing auth rate limit exceeded for {rate_key}");
+        tracing::warn!(rate_key = %rate_key, "pairing auth rate limit exceeded");
         let err = serde_json::json!({
             "error": format!("Too many auth attempts. Try again in {}s.", e.retry_after_secs),
             "retry_after": e.retry_after_secs,
@@ -1663,11 +1663,11 @@ async fn handle_pair(
 
     match state.pairing.try_pair(code, &rate_key).await {
         Ok(Some(token)) => {
-            tracing::info!("🔐 New client paired successfully");
+            tracing::info!("new client paired successfully");
             if let Err(err) =
                 Box::pin(persist_pairing_tokens(state.config.clone(), &state.pairing)).await
             {
-                tracing::error!("🔐 Pairing succeeded but token persistence failed: {err:#}");
+                tracing::error!(error = ?err, "pairing succeeded but token persistence failed");
                 let body = serde_json::json!({
                     "paired": true,
                     "persisted": false,
@@ -1687,14 +1687,12 @@ async fn handle_pair(
         }
         Ok(None) => {
             state.auth_limiter.record_attempt(&rate_key);
-            tracing::warn!("🔐 Pairing attempt with invalid code");
+            tracing::warn!("pairing attempt with invalid code");
             let err = serde_json::json!({"error": "Invalid pairing code"});
             (StatusCode::FORBIDDEN, Json(err))
         }
         Err(lockout_secs) => {
-            tracing::warn!(
-                "🔐 Pairing locked out — too many failed attempts ({lockout_secs}s remaining)"
-            );
+            tracing::warn!(lockout_secs, "pairing locked out; too many failed attempts");
             let err = serde_json::json!({
                 "error": format!("Too many failed attempts. Try again in {lockout_secs}s."),
                 "retry_after": lockout_secs
@@ -2765,7 +2763,7 @@ async fn handle_admin_shutdown(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     require_localhost(&peer)?;
-    tracing::info!("🔌 Admin shutdown request received — initiating graceful shutdown");
+    tracing::info!("admin shutdown request received; initiating graceful shutdown");
 
     let body = AdminResponse {
         success: true,
@@ -2809,7 +2807,7 @@ async fn handle_admin_reload(
         ));
     };
 
-    tracing::info!("🔄 Admin reload request received");
+    tracing::info!("admin reload request received");
     // Clear the pending-reload flag before the daemon supervisor brings up
     // the new gateway instance. The fresh instance starts with the flag
     // already false, matching its "subsystems just-loaded, no pending
@@ -2887,7 +2885,7 @@ async fn handle_admin_paircode_new(
     require_localhost(&peer)?;
     match state.pairing.generate_new_pairing_code() {
         Some(code) => {
-            tracing::info!("🔐 New pairing code generated via admin endpoint");
+            tracing::info!("new pairing code generated via admin endpoint");
             let body = serde_json::json!({
                 "success": true,
                 "pairing_required": state.pairing.require_pairing(),
