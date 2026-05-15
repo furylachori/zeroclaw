@@ -70,7 +70,7 @@ pub async fn maybe_run_skill_review(
         return;
     }
 
-    let tools: Vec<Box<dyn Tool>> = build_review_tools(workspace_dir.clone());
+    let tools: Vec<Box<dyn Tool>> = build_review_tools(workspace_dir.clone(), config.clone());
     let review_input = build_review_input(&failed_slugs);
 
     let mut review_history = history;
@@ -126,12 +126,15 @@ pub async fn maybe_run_skill_review(
     }
 }
 
-fn build_review_tools(workspace_dir: PathBuf) -> Vec<Box<dyn Tool>> {
+fn build_review_tools(
+    workspace_dir: PathBuf,
+    improvement_config: SkillImprovementConfig,
+) -> Vec<Box<dyn Tool>> {
     let wd = Arc::new(workspace_dir);
     vec![
         Box::new(SkillsListTool::new((*wd).clone())),
         Box::new(SkillViewTool::new((*wd).clone())),
-        Box::new(SkillManageTool::new((*wd).clone())),
+        Box::new(SkillManageTool::new((*wd).clone(), improvement_config)),
     ]
 }
 
