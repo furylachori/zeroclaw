@@ -849,5 +849,4 @@ mod validate_delivery_tests {
         };
         validate_delivery_config(Some(&delivery)).expect("webhook without thread_id must validate");
     }
-
 }

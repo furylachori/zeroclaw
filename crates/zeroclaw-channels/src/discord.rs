@@ -1158,14 +1158,7 @@ fn admit_discord_message(
         return None;
     }
 
-    let mut normalized = content.to_string();
-    if mention_only {
-        for tag in mention_tags(bot_user_id) {
-            normalized = normalized.replace(&tag, " ");
-        }
-    }
-    let normalized = normalized.trim().to_string();
-
+    let normalized = content.trim().to_string();
     if normalized.is_empty() && !has_attachments {
         return None;
     }
@@ -2377,15 +2370,15 @@ mod tests {
     }
 
     #[test]
-    fn admit_discord_message_strips_mentions_and_trims() {
+    fn admit_discord_message_preserves_mention_in_body() {
         let cleaned = admit_discord_message("  <@!12345> run status  ", false, true, "12345");
-        assert_eq!(cleaned.as_deref(), Some("run status"));
+        assert_eq!(cleaned.as_deref(), Some("<@!12345> run status"));
     }
 
     #[test]
-    fn admit_discord_message_rejects_empty_text_and_no_attachments() {
+    fn admit_discord_message_admits_caption_that_is_only_the_mention() {
         let cleaned = admit_discord_message("<@12345>", false, true, "12345");
-        assert!(cleaned.is_none());
+        assert_eq!(cleaned.as_deref(), Some("<@12345>"));
     }
 
     #[test]
@@ -2399,12 +2392,12 @@ mod tests {
 
     #[test]
     fn admit_discord_message_attachment_only_with_mention_in_guild_is_admitted() {
-        // Guild channel with mention_only=true. Caption is just the @mention
-        // tag with no other text, but the message has a media attachment.
-        // Mention requirement is satisfied; cleaned text is empty but the
-        // attachment alone is enough input.
+        // Guild channel with mention_only=true. Caption is the @mention tag
+        // and the message has a media attachment. Mention gate passes; the
+        // body keeps the mention text so downstream code (and the agent it
+        // routes to) can see who was addressed.
         let cleaned = admit_discord_message("<@12345>", true, true, "12345");
-        assert_eq!(cleaned.as_deref(), Some(""));
+        assert_eq!(cleaned.as_deref(), Some("<@12345>"));
     }
 
     #[test]
@@ -2449,14 +2442,15 @@ mod tests {
     }
 
     #[test]
-    fn mention_only_guild_message_with_mention_passes_and_strips() {
-        // Guild messages that do carry a @mention pass through and have the
-        // mention tag stripped, consistent with pre-existing behaviour.
+    fn mention_only_guild_message_with_mention_passes_through() {
+        // Guild messages that carry a @mention pass through the gate with
+        // the mention text preserved so downstream consumers (and the agent
+        // it routes to) can see who was addressed.
         let mention_only = true;
         let is_dm = false;
         let effective = mention_only && !is_dm;
         let cleaned = admit_discord_message("<@12345> run status", false, effective, "12345");
-        assert_eq!(cleaned.as_deref(), Some("run status"));
+        assert_eq!(cleaned.as_deref(), Some("<@12345> run status"));
     }
 
     // Message splitting tests

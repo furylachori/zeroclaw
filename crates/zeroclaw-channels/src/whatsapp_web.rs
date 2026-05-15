@@ -646,43 +646,6 @@ impl WhatsAppWebChannel {
 
         false
     }
-
-    /// Strip text-based @<bot_phone> mention from the message, collapse whitespace.
-    /// Returns None if the result is empty after stripping.
-    #[cfg(feature = "whatsapp-web")]
-    fn normalize_incoming_content(text: &str, bot_phone: &str) -> Option<String> {
-        let pattern = format!("@{bot_phone}");
-        let mut result = String::with_capacity(text.len());
-        let mut remaining = text;
-
-        while let Some(pos) = remaining.find(&pattern) {
-            let after = pos + pattern.len();
-            let leading_ok = pos == 0
-                || remaining[..pos]
-                    .chars()
-                    .next_back()
-                    .is_none_or(|ch| !ch.is_ascii_alphanumeric());
-            let trailing_ok = remaining[after..]
-                .chars()
-                .next()
-                .is_none_or(|ch| !ch.is_ascii_digit());
-            if leading_ok && trailing_ok {
-                result.push_str(&remaining[..pos]);
-                remaining = &remaining[after..];
-            } else {
-                result.push_str(&remaining[..after]);
-                remaining = &remaining[after..];
-            }
-        }
-        result.push_str(remaining);
-
-        let normalized: String = result.split_whitespace().collect::<Vec<_>>().join(" ");
-        if normalized.is_empty() {
-            None
-        } else {
-            Some(normalized)
-        }
-    }
 }
 
 /// Decide whether a `fromMe` message outside the operator's self-chat is an
@@ -1144,7 +1107,7 @@ impl Channel for WhatsAppWebChannel {
                                 }
 
                                 // mention_only: skip group messages without a bot mention
-                                let content = if mention_only && is_group {
+                                if mention_only && is_group {
                                     let bot_phone = bot_phone_inner.lock();
                                     if let Some(ref bp) = *bot_phone {
                                         let mentioned_jids =
@@ -1159,26 +1122,13 @@ impl Channel for WhatsAppWebChannel {
                                             );
                                             return;
                                         }
-                                        match Self::normalize_incoming_content(
-                                            &content, bp,
-                                        ) {
-                                            Some(c) => c,
-                                            None => {
-                                                tracing::debug!(
-                                                    "message empty after stripping mention"
-                                                );
-                                                return;
-                                            }
-                                        }
                                     } else {
                                         tracing::debug!(
                                             "mention_only active but bot identity unknown, skipping group msg"
                                         );
                                         return;
                                     }
-                                } else {
-                                    content
-                                };
+                                }
 
                                 // ── Mention-pattern gating ──
                                 // Apply dm_mention_patterns for DMs and
@@ -2024,60 +1974,6 @@ mod tests {
             &no_jids,
             "919211916069"
         ));
-    }
-
-    #[test]
-    #[cfg(feature = "whatsapp-web")]
-    fn normalize_incoming_content_strips_mention() {
-        assert_eq!(
-            WhatsAppWebChannel::normalize_incoming_content(
-                "@919211916069 what's the weather?",
-                "919211916069"
-            ),
-            Some("what's the weather?".to_string())
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "whatsapp-web")]
-    fn normalize_incoming_content_strips_multiple() {
-        assert_eq!(
-            WhatsAppWebChannel::normalize_incoming_content(
-                "@919211916069 hey @919211916069 hello",
-                "919211916069"
-            ),
-            Some("hey hello".to_string())
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "whatsapp-web")]
-    fn normalize_incoming_content_returns_none_for_empty() {
-        assert_eq!(
-            WhatsAppWebChannel::normalize_incoming_content("@919211916069", "919211916069"),
-            None
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "whatsapp-web")]
-    fn normalize_incoming_content_preserves_prefix_match() {
-        assert_eq!(
-            WhatsAppWebChannel::normalize_incoming_content("@155512345678 hello", "15551234567"),
-            Some("@155512345678 hello".to_string())
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "whatsapp-web")]
-    fn normalize_incoming_content_ignores_embedded_at() {
-        assert_eq!(
-            WhatsAppWebChannel::normalize_incoming_content(
-                "foo@919211916069 hello",
-                "919211916069"
-            ),
-            Some("foo@919211916069 hello".to_string())
-        );
     }
 
     #[test]

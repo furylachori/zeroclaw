@@ -1056,23 +1056,9 @@ impl TelegramChannel {
         !Self::find_bot_mention_spans(text, bot_username).is_empty()
     }
 
-    fn normalize_incoming_content(text: &str, bot_username: &str) -> Option<String> {
-        let spans = Self::find_bot_mention_spans(text, bot_username);
-        if spans.is_empty() {
-            let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-            return (!normalized.is_empty()).then_some(normalized);
-        }
-
-        let mut normalized = String::with_capacity(text.len());
-        let mut cursor = 0;
-        for (start, end) in spans {
-            normalized.push_str(&text[cursor..start]);
-            cursor = end;
-        }
-        normalized.push_str(&text[cursor..]);
-
-        let normalized = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
-        (!normalized.is_empty()).then_some(normalized)
+    fn normalize_incoming_content(text: &str, _bot_username: &str) -> Option<String> {
+        let trimmed = text.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
     }
 
     fn is_group_message(message: &serde_json::Value) -> bool {
@@ -1091,9 +1077,8 @@ impl TelegramChannel {
     /// - `Some(None)` — gate does not apply (DM, or `mention_only = false`,
     ///   or the message is not in a group). The caller should use the raw
     ///   caption / transcript as-is.
-    /// - `Some(Some(normalized))` — caption mentions the bot; the mention
-    ///   has been stripped and the resulting text is suitable for use as
-    ///   message content.
+    /// - `Some(Some(trimmed))` — caption mentions the bot; the trimmed
+    ///   caption (mention preserved) is suitable for use as message content.
     /// - `None` — gated and rejected; the caller must drop the update
     ///   without performing any expensive work (no download, no
     ///   transcription).
@@ -1497,8 +1482,8 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         // pipeline validates vision capability. Non-image files always get
         // [Document:] format regardless of Telegram's classification.
         let mut content = format_attachment_content(attachment.kind, &local_filename, &local_path);
-        // `gated_caption` is the caption with any bot mention stripped when
-        // `mention_only` applied; otherwise the raw caption (or None).
+        // `gated_caption` is the trimmed caption when the `mention_only`
+        // gate admits it; otherwise the raw caption (or None).
         if let Some(caption) = gated_caption.as_deref()
             && !caption.is_empty()
         {
@@ -4668,20 +4653,14 @@ mod tests {
     }
 
     #[test]
-    fn telegram_normalize_incoming_content_strips_mention() {
+    fn telegram_normalize_incoming_content_preserves_mention() {
         let result = TelegramChannel::normalize_incoming_content("@mybot hello", "mybot");
-        assert_eq!(result, Some("hello".to_string()));
-    }
-
-    #[test]
-    fn telegram_normalize_incoming_content_handles_multiple_mentions() {
-        let result = TelegramChannel::normalize_incoming_content("@mybot @mybot test", "mybot");
-        assert_eq!(result, Some("test".to_string()));
+        assert_eq!(result, Some("@mybot hello".to_string()));
     }
 
     #[test]
     fn telegram_normalize_incoming_content_returns_none_for_empty() {
-        let result = TelegramChannel::normalize_incoming_content("@mybot", "mybot");
+        let result = TelegramChannel::normalize_incoming_content("   ", "mybot");
         assert_eq!(result, None);
     }
 
@@ -4719,7 +4698,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_update_message_mention_only_group_strips_mention_and_drops_empty() {
+    fn parse_update_message_mention_only_group_preserves_mention_in_body() {
         let mention_only = true;
         let ch = TelegramChannel::new(
             "token".into(),
@@ -4751,9 +4730,9 @@ mod tests {
         let parsed = ch
             .parse_update_message(&update)
             .expect("mention should parse");
-        assert_eq!(parsed.content, "Hi status please");
+        assert_eq!(parsed.content, "Hi @MyBot status please");
 
-        let empty_update = serde_json::json!({
+        let mention_only_update = serde_json::json!({
             "update_id": 12,
             "message": {
                 "message_id": 46,
@@ -4769,7 +4748,10 @@ mod tests {
             }
         });
 
-        assert!(ch.parse_update_message(&empty_update).is_none());
+        let parsed = ch
+            .parse_update_message(&mention_only_update)
+            .expect("mention-only body admits");
+        assert_eq!(parsed.content, "@mybot");
     }
 
     #[test]
@@ -4859,11 +4841,11 @@ mod tests {
         );
     }
 
-    /// When the caption mentions the bot, the gate passes and returns the
-    /// caption with the mention stripped — matching the text-message
-    /// behavior of `normalize_incoming_content`.
+    /// When the caption mentions the bot, the gate admits and returns the
+    /// trimmed caption with the mention preserved verbatim, matching the
+    /// text-message behavior of `normalize_incoming_content`.
     #[test]
-    fn check_media_mention_gate_accepts_and_strips_caption_mention() {
+    fn check_media_mention_gate_admits_and_preserves_caption_mention() {
         let ch = TelegramChannel::new(
             "token".into(),
             "default",
@@ -4878,8 +4860,8 @@ mod tests {
         let result = ch.check_media_mention_gate(&msg, Some("@mybot describe this"));
         assert_eq!(
             result,
-            Some(Some("describe this".to_string())),
-            "mention should be stripped, remaining caption preserved"
+            Some(Some("@mybot describe this".to_string())),
+            "mention text preserved verbatim once gate admits"
         );
     }
 

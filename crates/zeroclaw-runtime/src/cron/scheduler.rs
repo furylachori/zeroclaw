@@ -1415,13 +1415,7 @@ mod tests {
     async fn persist_job_result_uses_one_write_connection_for_recurring_job() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
-        let job = cron::add_job(
-            &config,
-            "test-agent",
-            "*/5 * * * *",
-            "echo ok",
-        )
-        .unwrap();
+        let job = cron::add_job(&config, "test-agent", "*/5 * * * *", "echo ok").unwrap();
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
@@ -1440,13 +1434,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(&tmp).await;
         config.scheduler.max_run_history = 2;
-        let job = cron::add_job(
-            &config,
-            "test-agent",
-            "*/5 * * * *",
-            "echo ok",
-        )
-        .unwrap();
+        let job = cron::add_job(&config, "test-agent", "*/5 * * * *", "echo ok").unwrap();
         let base = Utc::now();
 
         for idx in 0..3 {
@@ -1473,13 +1461,7 @@ mod tests {
     async fn persist_job_result_rolls_back_run_history_when_job_state_update_fails() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
-        let job = cron::add_job(
-            &config,
-            "test-agent",
-            "*/5 * * * *",
-            "echo ok",
-        )
-        .unwrap();
+        let job = cron::add_job(&config, "test-agent", "*/5 * * * *", "echo ok").unwrap();
         let original_next_run = job.next_run;
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
@@ -1599,13 +1581,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(&tmp).await;
         config.scheduler.max_run_history = 1;
-        let job = cron::add_job(
-            &config,
-            "test-agent",
-            "*/5 * * * *",
-            "echo ok",
-        )
-        .unwrap();
+        let job = cron::add_job(&config, "test-agent", "*/5 * * * *", "echo ok").unwrap();
         let original_next_run = job.next_run;
         let seed_started = Utc::now() - ChronoDuration::minutes(20);
         let seed_finished = seed_started + ChronoDuration::milliseconds(10);
@@ -1656,13 +1632,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = cron::add_once_at(
-            &config,
-            "test-agent",
-            at,
-            "echo one-shot-shell",
-        )
-        .unwrap();
+        let job = cron::add_once_at(&config, "test-agent", at, "echo one-shot-shell").unwrap();
         assert!(job.delete_after_run);
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);

@@ -809,15 +809,6 @@ impl SlackChannel {
         text.contains(&format!("<@{bot_user_id}>"))
     }
 
-    fn strip_bot_mentions(text: &str, bot_user_id: &str) -> String {
-        if bot_user_id.is_empty() {
-            return text.trim().to_string();
-        }
-        text.replace(&format!("<@{bot_user_id}>"), " ")
-            .trim()
-            .to_string()
-    }
-
     fn normalize_incoming_text(
         text: &str,
         require_mention: bool,
@@ -826,10 +817,7 @@ impl SlackChannel {
         if require_mention && !Self::contains_bot_mention(text, bot_user_id) {
             return None;
         }
-
-        // Always strip bot mentions so the model sees clean text,
-        // even in threads where the mention wasn't required.
-        Some(Self::strip_bot_mentions(text, bot_user_id))
+        Some(text.trim().to_string())
     }
 
     #[cfg(test)]
@@ -4553,7 +4541,7 @@ mod tests {
         assert!(SlackChannel::normalize_incoming_content("hello", true, "U_BOT").is_none());
         assert_eq!(
             SlackChannel::normalize_incoming_content("<@U_BOT> run", true, "U_BOT").as_deref(),
-            Some("run")
+            Some("<@U_BOT> run")
         );
     }
 

@@ -405,14 +405,7 @@ async fn handle_webhook(
             }
         }
 
-        // 5. Mention gate for group messages using `mention` policy
-        let mention_span = if is_group && state.group_policy == LineGroupPolicy::Mention {
-            LineChannel::find_bot_mention(msg_obj, &state.bot_user_id)
-        } else {
-            None
-        };
-
-        // 6. Resolve recipient (groupId/roomId for group context)
+        // 5. Resolve recipient (groupId/roomId for group context)
         let recipient = match source_type {
             "group" => source
                 .get("groupId")
@@ -427,17 +420,7 @@ async fn handle_webhook(
             _ => user_id.to_string(),
         };
 
-        // 7. Strip the @mention span from group messages using char index/length.
-        let content = if let Some((idx, len)) = mention_span {
-            let stripped = LineChannel::strip_mention_range(text, idx, len);
-            if stripped.is_empty() {
-                continue;
-            }
-            stripped
-        } else {
-            text.trim().to_string()
-        };
-
+        let content = text.trim().to_string();
         if content.is_empty() {
             continue;
         }
@@ -700,32 +683,6 @@ impl LineChannel {
             }
         }
         None
-    }
-
-    /// Remove a mention span from `text` using character-unit `index`/`length`
-    /// from LINE's mention data.
-    ///
-    /// After removal, any run of whitespace characters at the join point is
-    /// collapsed to a single space so that "hey @Bot help" → "hey help".
-    fn strip_mention_range(text: &str, char_index: usize, char_length: usize) -> String {
-        let chars: Vec<char> = text.chars().collect();
-        let total = chars.len();
-
-        let before: String = chars[..char_index.min(total)].iter().collect();
-        let end = (char_index + char_length).min(total);
-        let after: String = chars[end..].iter().collect();
-
-        // Trim trailing whitespace from `before` and leading from `after`,
-        // then rejoin with a single space only when both sides are non-empty.
-        let before_trimmed = before.trim_end();
-        let after_trimmed = after.trim_start();
-
-        match (before_trimmed.is_empty(), after_trimmed.is_empty()) {
-            (true, true) => String::new(),
-            (true, false) => after_trimmed.to_string(),
-            (false, true) => before_trimmed.to_string(),
-            (false, false) => format!("{before_trimmed} {after_trimmed}"),
-        }
     }
 
     /// Split long text into chunks ≤ `LINE_MAX_MESSAGE_LEN` characters.
@@ -1201,27 +1158,6 @@ mod tests {
     fn find_bot_mention_missing_field() {
         let msg = serde_json::json!({"type": "text", "text": "hello"});
         assert_eq!(LineChannel::find_bot_mention(&msg, "Ubot123"), None);
-    }
-
-    #[test]
-    fn strip_mention_range_prefix() {
-        let result = LineChannel::strip_mention_range("@Bot hello", 0, 4);
-        assert_eq!(result, "hello");
-    }
-
-    #[test]
-    fn strip_mention_range_mid() {
-        let result = LineChannel::strip_mention_range("hey @Bot help", 4, 4);
-        assert_eq!(result, "hey help");
-    }
-
-    #[test]
-    fn strip_mention_range_unicode() {
-        // "สวัสดี @Bot ช่วยด้วย"
-        // สวัสดี = 6 chars, space = 1 → @Bot starts at char index 7, length 4
-        let text = "สวัสดี @Bot ช่วยด้วย";
-        let result = LineChannel::strip_mention_range(text, 7, 4);
-        assert_eq!(result, "สวัสดี ช่วยด้วย");
     }
 
     #[test]

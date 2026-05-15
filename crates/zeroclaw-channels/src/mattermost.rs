@@ -692,10 +692,11 @@ fn find_bot_mention_spans(text: &str, bot_username: &str) -> Vec<(usize, usize)>
     spans
 }
 
-/// Normalize incoming Mattermost content when `mention_only` is enabled.
+/// Gate incoming Mattermost content when `mention_only` is enabled.
 ///
-/// Returns `None` if the message doesn't mention the bot.
-/// Returns `Some(cleaned)` with the @-mention stripped and text trimmed.
+/// Returns `None` if the message doesn't mention the bot, otherwise the
+/// trimmed text with the mention preserved so downstream consumers can
+/// see who was addressed.
 fn normalize_mattermost_content(
     text: &str,
     bot_user_id: &str,
@@ -714,25 +715,11 @@ fn normalize_mattermost_content(
         return None;
     }
 
-    let mut cleaned = text.to_string();
-    if !mention_spans.is_empty() {
-        let mut result = String::with_capacity(text.len());
-        let mut cursor = 0;
-        for (start, end) in mention_spans {
-            result.push_str(&text[cursor..start]);
-            result.push(' ');
-            cursor = end;
-        }
-        result.push_str(&text[cursor..]);
-        cleaned = result;
-    }
-
-    let cleaned = cleaned.trim().to_string();
-    if cleaned.is_empty() {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
         return None;
     }
-
-    Some(cleaned)
+    Some(trimmed.to_string())
 }
 
 #[cfg(test)]
@@ -1094,11 +1081,11 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(msg.content, "what is the weather?");
+        assert_eq!(msg.content, "@mybot what is the weather?");
     }
 
     #[test]
-    fn mention_only_strips_mention_and_trims() {
+    fn mention_only_preserves_mention_in_body() {
         let thread_replies = true;
         let mention_only = true;
         let ch = MattermostChannel::new(
@@ -1130,11 +1117,11 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(msg.content, "run status");
+        assert_eq!(msg.content, "@mybot  run status");
     }
 
     #[test]
-    fn mention_only_rejects_empty_after_stripping() {
+    fn mention_only_admits_caption_that_is_only_the_mention() {
         let thread_replies = true;
         let mention_only = true;
         let ch = MattermostChannel::new(
@@ -1156,15 +1143,17 @@ mod tests {
             "root_id": ""
         });
 
-        let msg = ch.parse_mattermost_post(
-            &post,
-            "bot123",
-            "mybot",
-            1_500_000_000_000_i64,
-            "chan1",
-            None,
-        );
-        assert!(msg.is_none());
+        let msg = ch
+            .parse_mattermost_post(
+                &post,
+                "bot123",
+                "mybot",
+                1_500_000_000_000_i64,
+                "chan1",
+                None,
+            )
+            .unwrap();
+        assert_eq!(msg.content, "@mybot");
     }
 
     #[test]
@@ -1200,7 +1189,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(msg.content, "hello");
+        assert_eq!(msg.content, "@MyBot hello");
     }
 
     #[test]
@@ -1312,7 +1301,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(msg.content, "hey   how are you?");
+        assert_eq!(msg.content, "hey @mybot how are you?");
     }
 
     #[test]
@@ -1450,10 +1439,10 @@ mod tests {
     // ── normalize_mattermost_content unit tests ───────────────────
 
     #[test]
-    fn normalize_strips_and_trims() {
+    fn normalize_preserves_mention_and_trims() {
         let post = json!({});
         let result = normalize_mattermost_content("  @mybot  do stuff  ", "bot123", "mybot", &post);
-        assert_eq!(result.as_deref(), Some("do stuff"));
+        assert_eq!(result.as_deref(), Some("@mybot  do stuff"));
     }
 
     #[test]
@@ -1464,10 +1453,10 @@ mod tests {
     }
 
     #[test]
-    fn normalize_returns_none_when_only_mention() {
+    fn normalize_admits_mention_only_caption() {
         let post = json!({});
         let result = normalize_mattermost_content("@mybot", "bot123", "mybot", &post);
-        assert!(result.is_none());
+        assert_eq!(result.as_deref(), Some("@mybot"));
     }
 
     #[test]
@@ -1480,11 +1469,11 @@ mod tests {
     }
 
     #[test]
-    fn normalize_strips_multiple_mentions() {
+    fn normalize_preserves_multiple_mentions() {
         let post = json!({});
         let result =
             normalize_mattermost_content("@mybot hello @mybot world", "bot123", "mybot", &post);
-        assert_eq!(result.as_deref(), Some("hello   world"));
+        assert_eq!(result.as_deref(), Some("@mybot hello @mybot world"));
     }
 
     #[test]
@@ -1492,7 +1481,7 @@ mod tests {
         let post = json!({});
         let result =
             normalize_mattermost_content("@mybot hello @mybotx world", "bot123", "mybot", &post);
-        assert_eq!(result.as_deref(), Some("hello @mybotx world"));
+        assert_eq!(result.as_deref(), Some("@mybot hello @mybotx world"));
     }
 
     // ── Transcription tests ───────────────────────────────────────

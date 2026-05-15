@@ -987,8 +987,6 @@ impl LarkChannel {
                         _ => { tracing::debug!("WS: skipping unsupported type '{}'", lark_msg.message_type); continue; }
                     };
 
-                    // Strip @_user_N placeholders
-                    let text = strip_at_placeholders(&text);
                     let text = text.trim().to_string();
                     if text.is_empty() { continue; }
 
@@ -2401,30 +2399,6 @@ fn extract_inline_text(el: &serde_json::Value, out: &mut String) {
         }
         _ => {}
     }
-}
-
-/// Remove `@_user_N` placeholder tokens injected by Feishu in group chats.
-fn strip_at_placeholders(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    let mut chars = text.char_indices().peekable();
-    while let Some((_, ch)) = chars.next() {
-        if ch == '@' {
-            let rest: String = chars.clone().map(|(_, c)| c).collect();
-            if let Some(after) = rest.strip_prefix("_user_") {
-                let skip =
-                    "_user_".len() + after.chars().take_while(|c| c.is_ascii_digit()).count();
-                for _ in 0..=skip {
-                    chars.next();
-                }
-                if chars.peek().map(|(_, c)| *c == ' ').unwrap_or(false) {
-                    chars.next();
-                }
-                continue;
-            }
-        }
-        result.push(ch);
-    }
-    result
 }
 
 fn mention_matches_bot_open_id(mention: &serde_json::Value, bot_open_id: &str) -> bool {

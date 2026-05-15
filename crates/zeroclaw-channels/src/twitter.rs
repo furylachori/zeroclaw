@@ -282,10 +282,8 @@ impl Channel for TwitterChannel {
                                 continue;
                             }
 
-                            // Strip the @mention from the text
-                            let clean_text = strip_at_mention(text, &bot_user_id);
-
-                            if clean_text.trim().is_empty() {
+                            let trimmed_text = text.trim();
+                            if trimmed_text.is_empty() {
                                 continue;
                             }
 
@@ -295,7 +293,7 @@ impl Channel for TwitterChannel {
                                 id: Uuid::new_v4().to_string(),
                                 sender: username,
                                 reply_target,
-                                content: clean_text,
+                                content: trimmed_text.to_string(),
                                 channel: "twitter".to_string(),
                                 channel_alias: Some(self.alias.clone()),
                                 timestamp: std::time::SystemTime::now()
@@ -354,20 +352,6 @@ impl Channel for TwitterChannel {
     async fn health_check(&self) -> bool {
         self.get_authenticated_user_id().await.is_ok()
     }
-}
-
-/// Strip @mention from the beginning of a tweet text.
-fn strip_at_mention(text: &str, _bot_user_id: &str) -> String {
-    // Remove all leading @mentions (Twitter includes @bot_name at start of replies)
-    let mut result = text;
-    while let Some(rest) = result.strip_prefix('@') {
-        // Skip past the username (until whitespace or end)
-        match rest.find(char::is_whitespace) {
-            Some(idx) => result = rest[idx..].trim_start(),
-            None => return String::new(),
-        }
-    }
-    result.to_string()
 }
 
 /// Split text into tweet-sized chunks, breaking at word boundaries.
@@ -445,26 +429,6 @@ mod tests {
         let ch = TwitterChannel::new("token".into(), "twitter_test_alias", Arc::new(Vec::new));
         assert!(!ch.is_duplicate("").await);
         assert!(!ch.is_duplicate("").await);
-    }
-
-    #[test]
-    fn test_strip_at_mention_single() {
-        assert_eq!(strip_at_mention("@bot hello world", "123"), "hello world");
-    }
-
-    #[test]
-    fn test_strip_at_mention_multiple() {
-        assert_eq!(strip_at_mention("@bot @other hello", "123"), "hello");
-    }
-
-    #[test]
-    fn test_strip_at_mention_only() {
-        assert_eq!(strip_at_mention("@bot", "123"), "");
-    }
-
-    #[test]
-    fn test_strip_at_mention_no_mention() {
-        assert_eq!(strip_at_mention("hello world", "123"), "hello world");
     }
 
     #[test]
