@@ -43,8 +43,8 @@ import {
   storeMemory,
   deleteMemory,
   getMapKeys,
-  getProp,
 } from '@/lib/api';
+import { resolveModelToProviderType } from '@/lib/configuredModels';
 import type { MemoryEntry } from '@/types/api';
 import { loadAgentSummaries, toggleAgentEnabled, type AgentSummary } from '@/lib/agents';
 import AgentCard from '@/components/AgentCard';
@@ -1516,31 +1516,13 @@ function CostTab({ cost }: { cost: CostSummary }) {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const { keys: types } = await getMapKeys('providers.models');
-        const out: Record<string, string> = {};
-        for (const type of types) {
-          const { keys: aliases } = await getMapKeys(
-            `providers.models.${type}`,
-          );
-          const propResults = await Promise.all(
-            aliases.map((alias) =>
-              getProp(`providers.models.${type}.${alias}.model`).catch(
-                () => null,
-              ),
-            ),
-          );
-          for (const r of propResults) {
-            const v = r && typeof r.value === 'string' ? r.value : '';
-            if (v && v !== '<unset>' && !out[v]) out[v] = type;
-          }
-        }
-        if (!cancelled) setModelToType(out);
-      } catch {
-        /* swallow: model→type lookup is a UI nicety, not load-bearing */
-      }
-    })();
+    void resolveModelToProviderType('models')
+      .then((map) => {
+        if (!cancelled) setModelToType(map);
+      })
+      .catch(() => {
+        /* model→type lookup is a UI nicety, not load-bearing */
+      });
     return () => {
       cancelled = true;
     };

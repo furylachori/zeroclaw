@@ -23,8 +23,8 @@ import {
   createMapKey,
   deleteMapKey,
   getMapKeys,
-  getProp,
 } from '../../lib/api';
+import { configuredResourceIds } from '../../lib/configuredModels';
 import FieldForm from './FieldForm';
 
 export type CostRatesCategory = 'models' | 'tts' | 'transcription';
@@ -170,11 +170,9 @@ function ResourceListEditor({
   onSaved,
 }: CostRatesEditorProps) {
   const basePath = basePathFor(category, providerType);
-  // Mirror path on the [providers.*] side. Every configured alias under
-  // `providers.<category>.<type>.<alias>` carries a `.model` field whose
-  // value is the upstream resource id we'd price here. Walking those gives
-  // a schema-derived suggestion list with zero hand-typed entries.
-  const aliasMapPath = `providers.${category}.${providerType}`;
+  // Suggestion list comes from the matching `[providers.<category>.<type>.<alias>].model`
+  // values via the `configuredModels` helper. Schema-derived; no
+  // hand-typed entries.
   const [resources, setResources] = useState<string[]>([]);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -187,25 +185,11 @@ function ResourceListEditor({
   const reload = async () => {
     setLoading(true);
     try {
-      const [keys, aliasKeys] = await Promise.all([
+      const [keys, sugs] = await Promise.all([
         getMapKeys(basePath).then((r) => r.keys),
-        getMapKeys(aliasMapPath).then((r) => r.keys).catch(() => [] as string[]),
+        configuredResourceIds(category, providerType),
       ]);
       setResources(keys);
-      const seen = new Set<string>();
-      const sugs: string[] = [];
-      const results = await Promise.all(
-        aliasKeys.map((alias) =>
-          getProp(`${aliasMapPath}.${alias}.model`).catch(() => null),
-        ),
-      );
-      for (const r of results) {
-        const v = r && typeof r.value === 'string' ? r.value : '';
-        if (!v || v === '<unset>') continue;
-        if (seen.has(v)) continue;
-        seen.add(v);
-        sugs.push(v);
-      }
       setSuggestions(sugs);
     } catch (e) {
       setError(e instanceof ApiError ? e.envelope.message : (e as Error).message);
@@ -217,7 +201,7 @@ function ResourceListEditor({
   useEffect(() => {
     void reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [basePath, aliasMapPath]);
+  }, [basePath]);
 
   const addResource = async () => {
     const trimmed = newResource.trim();
@@ -320,7 +304,7 @@ function ResourceListEditor({
           {suggestions.filter((s) => !resources.includes(s)).length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className="text-xs" style={{ color: 'var(--pc-text-muted)' }}>
-                From <code className="font-mono">{aliasMapPath}</code>:
+                From <code className="font-mono">providers.{category}.{providerType}</code>:
               </span>
               {suggestions
                 .filter((s) => !resources.includes(s))
