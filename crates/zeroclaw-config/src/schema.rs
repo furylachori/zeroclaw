@@ -6486,9 +6486,10 @@ pub struct DreamModeConfig {
     /// Maximum number of recent memories to gather per dream cycle. Default: `50`.
     #[serde(default = "default_dream_gather_limit")]
     pub gather_limit: usize,
-    /// Enable audit mode: dream writes are staged in `dream_pending.json`, not
-    /// persisted to memory, until the user reviews them. Default: `false`.
-    #[serde(default)]
+    /// Audit mode: proposed memory mutations are staged in `dream_pending.json`
+    /// for user review rather than applied directly. Use `zeroclaw dream promote`
+    /// to apply staged changes. Default: `true` (safe first-slice behavior).
+    #[serde(default = "default_true")]
     pub audit_mode: bool,
     /// Show a "While you were away…" report on the next user interaction
     /// after a dream cycle completes. Default: `true`.
@@ -6532,7 +6533,7 @@ impl Default for DreamModeConfig {
             model: None,
             temperature: default_dream_temperature(),
             gather_limit: default_dream_gather_limit(),
-            audit_mode: false,
+            audit_mode: true,
             show_report: true,
             prune_threshold: default_dream_prune_threshold(),
             max_daily_age_days: default_dream_max_daily_age_days(),

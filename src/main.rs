@@ -1194,6 +1194,8 @@ enum MemoryCommands {
 enum DreamCommands {
     /// Show the pending dream report (marks as delivered)
     Report,
+    /// Apply staged dream mutations from dream_pending.json
+    Promote,
 }
 
 fn apply_i18n_to_command(cmd: clap::Command) -> clap::Command {
@@ -2164,6 +2166,7 @@ async fn main() -> Result<()> {
             verbose,
         } => match dream_command {
             Some(DreamCommands::Report) => dream::show_report(&config),
+            Some(DreamCommands::Promote) => dream::promote(&config).await,
             None => dream::run_dream(&config, dry_run, verbose).await,
         },
 

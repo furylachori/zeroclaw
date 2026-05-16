@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use zeroclaw_config::schema::Config;
+use zeroclaw_runtime::dream::pending::DreamPending;
 use zeroclaw_runtime::dream::report::DreamReport;
 use zeroclaw_runtime::i18n::{get_cli_string_with_args, get_required_cli_string};
 
@@ -30,8 +31,7 @@ pub async fn run_dream(config: &Config, dry_run: bool, verbose: bool) -> Result<
         .or(fallback.model.as_deref())
         .unwrap_or("claude-haiku-4-5-20251001");
 
-    let provider_runtime_options =
-        zeroclaw_providers::provider_runtime_options_from_config(config);
+    let provider_runtime_options = zeroclaw_providers::provider_runtime_options_from_config(config);
     let provider = zeroclaw_providers::create_routed_provider_with_options(
         provider_name,
         fallback.api_key.as_deref(),
@@ -70,10 +70,7 @@ pub async fn run_dream(config: &Config, dry_run: bool, verbose: bool) -> Result<
             ))
         );
         if dry_run {
-            println!(
-                "{}",
-                get_required_cli_string("cli-dream-dry-run-mode")
-            );
+            println!("{}", get_required_cli_string("cli-dream-dry-run-mode"));
         }
     }
 
@@ -98,10 +95,7 @@ pub async fn run_dream(config: &Config, dry_run: bool, verbose: bool) -> Result<
     );
 
     if !result.insights.is_empty() {
-        println!(
-            "\n{}",
-            get_required_cli_string("cli-dream-insights-header")
-        );
+        println!("\n{}", get_required_cli_string("cli-dream-insights-header"));
         for (i, insight) in result.insights.iter().enumerate() {
             println!("  {}. {insight}", i + 1);
         }
@@ -116,10 +110,9 @@ pub async fn run_dream(config: &Config, dry_run: bool, verbose: bool) -> Result<
     }
 
     if dry_run {
-        println!(
-            "\n{}",
-            get_required_cli_string("cli-dream-dry-run-notice")
-        );
+        println!("\n{}", get_required_cli_string("cli-dream-dry-run-notice"));
+    } else if config.dream_mode.audit_mode {
+        println!("\n{}", get_required_cli_string("cli-dream-staged-notice"));
     }
 
     Ok(())
@@ -136,5 +129,90 @@ pub fn show_report(config: &Config) -> Result<()> {
             println!("{}", get_required_cli_string("cli-dream-no-report"));
         }
     }
+    Ok(())
+}
+
+/// Promote staged dream mutations from `dream_pending.json` into memory.
+pub async fn promote(config: &Config) -> Result<()> {
+    use zeroclaw_api::memory_traits::{Memory, MemoryCategory};
+
+    let pending = DreamPending::load(&config.workspace_dir)?;
+    let Some(pending) = pending else {
+        println!("{}", get_required_cli_string("cli-dream-no-pending"));
+        return Ok(());
+    };
+
+    println!(
+        "{}",
+        get_cli_string_with_args(
+            "cli-dream-promote-summary",
+            &[
+                ("insights", &pending.insights.len().to_string()),
+                ("prunes", &pending.proposed_prunes.len().to_string()),
+            ],
+        )
+        .unwrap_or_else(|| format!(
+            "Promoting {} insights, pruning {} stale keys...",
+            pending.insights.len(),
+            pending.proposed_prunes.len()
+        ))
+    );
+
+    let memory = zeroclaw_memory::create_memory(
+        &config.memory,
+        &config.workspace_dir,
+        config
+            .providers
+            .fallback_provider()
+            .and_then(|e| e.api_key.as_deref()),
+    )
+    .context("dream promote: failed to create memory backend")?;
+
+    let mut stored = 0usize;
+    for insight in &pending.insights {
+        let key = format!("dream_insight_{}", uuid::Uuid::new_v4());
+        match memory
+            .store_with_metadata(
+                &key,
+                &insight.content,
+                MemoryCategory::Core,
+                None,
+                Some("dream"),
+                Some(insight.importance),
+            )
+            .await
+        {
+            Ok(()) => stored += 1,
+            Err(e) => {
+                eprintln!("  Failed to store insight: {e}");
+            }
+        }
+    }
+
+    let mut pruned = 0usize;
+    for key in &pending.proposed_prunes {
+        match memory.forget(key).await {
+            Ok(true) => pruned += 1,
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!("  Failed to prune key {key}: {e}");
+            }
+        }
+    }
+
+    DreamPending::clear(&config.workspace_dir)?;
+
+    println!(
+        "{}",
+        get_cli_string_with_args(
+            "cli-dream-promote-done",
+            &[
+                ("stored", &stored.to_string()),
+                ("pruned", &pruned.to_string()),
+            ],
+        )
+        .unwrap_or_else(|| format!("Done: {stored} insights stored, {pruned} memories pruned."))
+    );
+
     Ok(())
 }

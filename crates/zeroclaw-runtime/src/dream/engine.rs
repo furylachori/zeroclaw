@@ -20,6 +20,7 @@ use zeroclaw_api::memory_traits::{Memory, MemoryCategory, MemoryEntry};
 use zeroclaw_api::provider::Provider;
 use zeroclaw_config::schema::DreamModeConfig;
 
+use super::pending::{DreamPending, StagedInsight};
 use super::report::DreamReport;
 
 // ── Dream cycle result ─────────────────────────────────────────
@@ -118,9 +119,34 @@ impl DreamEngine {
             reflect_result.stale_keys.len()
         );
 
-        // In audit mode, skip mutation phases and return report-only results.
+        // In audit mode, stage proposed mutations for review instead of applying.
         if self.config.audit_mode {
-            info!("Dream cycle complete (audit/dry-run): report-only, no mutations");
+            let staged_insights: Vec<StagedInsight> = reflect_result
+                .insights
+                .iter()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| StagedInsight {
+                    content: s.clone(),
+                    importance: zeroclaw_memory::importance::compute_importance(
+                        s,
+                        &MemoryCategory::Core,
+                    ),
+                })
+                .collect();
+
+            let pending = DreamPending {
+                insights: staged_insights,
+                proposed_prunes: reflect_result.stale_keys.clone(),
+                timestamp: Utc::now(),
+                summary: reflect_result.summary.clone(),
+            };
+            if let Err(e) = pending.save(&self.workspace_dir) {
+                warn!("Failed to persist dream_pending.json: {e}");
+            }
+
+            info!(
+                "Dream cycle complete (audit): staged to dream_pending.json, no mutations applied"
+            );
             return Ok(DreamCycleResult {
                 gathered_count,
                 insights: reflect_result.insights,

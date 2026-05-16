@@ -845,11 +845,10 @@ async fn run_dream_worker(config: Config) -> Result<()> {
     )?;
 
     // Parse the cron schedule for cycle timing.
-    let schedule = cron::Schedule::from_str(&config.dream_mode.schedule)
-        .context(format!(
-            "dream worker: invalid cron expression '{}'",
-            config.dream_mode.schedule
-        ))?;
+    let schedule = cron::Schedule::from_str(&config.dream_mode.schedule).context(format!(
+        "dream worker: invalid cron expression '{}'",
+        config.dream_mode.schedule
+    ))?;
 
     crate::health::mark_component_ok("dream");
     tracing::info!(
