@@ -104,10 +104,10 @@ macro_rules! sections {
         }
 
         impl Section {
-            /// Stable on-the-wire key — appears as the TOML top-level
-            /// prefix (`model_providers.<type>.<alias>`), the
-            /// `/onboard/<key>` URL segment, and the `SectionInfo.key`
-            /// field returned by the gateway.
+            /// Stable on-the-wire key. Also serves as the TOML
+            /// top-level prefix (e.g. `providers.models.<type>.<alias>`),
+            /// the `/onboard/<key>` URL segment, and the
+            /// `SectionInfo.key` field returned by the gateway.
             #[must_use]
             pub const fn as_str(self) -> &'static str {
                 match self {
