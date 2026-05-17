@@ -472,7 +472,8 @@ impl CompatFamilySpec for VeniceModelProviderConfig {
         key: Option<&str>,
         api_url: Option<&str>,
     ) -> OpenAiCompatibleModelProvider {
-        self.build_compat_base(alias, key, api_url).without_native_tools()
+        self.build_compat_base(alias, key, api_url)
+            .without_native_tools()
     }
 }
 impl CompatFamilySpec for AtomicChatModelProviderConfig {
@@ -489,7 +490,8 @@ impl CompatFamilySpec for AtomicChatModelProviderConfig {
         key: Option<&str>,
         api_url: Option<&str>,
     ) -> OpenAiCompatibleModelProvider {
-        self.build_compat_base(alias, key, api_url).without_native_tools()
+        self.build_compat_base(alias, key, api_url)
+            .without_native_tools()
     }
 }
 
@@ -683,26 +685,24 @@ impl FamilyProviderFactory for OllamaModelProviderConfig {
         api_url: Option<&str>,
         opts: &ModelProviderRuntimeOptions,
     ) -> Result<Box<dyn ModelProvider>> {
-        // Per-alias Ollama tuning lives on this typed slot, not on
-        // the generic `ModelProviderRuntimeOptions`. Read the three
-        // optional knobs off `&self` and bundle them into the
-        // request-time `OllamaTuning` so the wire payload's `options`
-        // block is explicit instead of relying on Ollama server
-        // defaults.
-        let tuning = crate::ollama::OllamaTuning::from_runtime_overrides(
-            self.num_ctx,
-            self.num_predict,
-            self.temperature_override,
-        );
-        Ok(Box::new(
-            crate::ollama::OllamaModelProvider::new_with_reasoning(
-                alias,
-                api_url,
-                key,
-                opts.reasoning_enabled,
-            )
-            .with_tuning(tuning),
-        ))
+        let base_url = api_url.unwrap_or("http://localhost:11434/v1");
+        let ollama_key = key
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("ollama");
+        let mut p = OpenAiCompatibleModelProvider::new_with_vision(
+            alias,
+            "Ollama",
+            base_url,
+            Some(ollama_key),
+            AuthStyle::Bearer,
+            true,
+        )
+        .with_local_model_tool_sanitize();
+        if opts.merge_system_into_user {
+            p = p.with_merge_system_into_user();
+        }
+        Ok(apply_compat_options(p, opts))
     }
 }
 

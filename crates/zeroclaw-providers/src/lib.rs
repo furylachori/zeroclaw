@@ -2765,12 +2765,6 @@ mod tests {
 
     #[test]
     fn ollama_alias_tuning_fields_populate_tuning_struct() {
-        // Per-alias Ollama knobs live on `OllamaModelProviderConfig`
-        // (not on the generic `ModelProviderRuntimeOptions`). The
-        // factory's `create_model_provider` impl reads them off `&self` and
-        // builds `OllamaTuning` from there. Mirror that derivation
-        // here so the three fields are covered without exercising the
-        // factory dispatch.
         let alias = zeroclaw_config::schema::OllamaModelProviderConfig {
             num_ctx: Some(16384),
             num_predict: Some(4096),
@@ -2793,10 +2787,6 @@ mod tests {
 
     #[test]
     fn ollama_alias_tuning_defaults_leave_temperature_override_unset() {
-        // A default `OllamaModelProviderConfig` must produce a tuning
-        // with `temperature_override = None` so per-call temperature
-        // wins — the backward-compat guarantee for operators who
-        // never set the override in config.toml.
         let alias = zeroclaw_config::schema::OllamaModelProviderConfig::default();
         let tuning = ollama::OllamaTuning::from_runtime_overrides(
             alias.num_ctx,
