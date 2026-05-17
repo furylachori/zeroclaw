@@ -974,15 +974,19 @@ async fn process_chat_message(
 
         // Trace the cancelled turn so the doctor / replay tool sees it
         // alongside successful turns. #6001 follow-through.
-        zeroclaw_runtime::observability::runtime_trace::record_event(
-            "gateway_ws_turn",
-            Some("ws"),
-            Some(&provider_label),
-            Some(&state.model),
-            Some(&turn_id),
-            Some(false),
-            Some("interrupted by user"),
-            serde_json::json!({ "session_key": session_key, "cancelled": true }),
+        ::zeroclaw_log::record!(
+            INFO,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Cancel)
+                .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                .with_attrs(::serde_json::json!({
+                    "model_provider": provider_label,
+                    "model": state.model,
+                    "session_key": session_key,
+                    "reason": "interrupted by user",
+                    "cancelled": true,
+                    "trace_id": turn_id,
+                })),
+            "gateway_ws_turn"
         );
 
         return;
@@ -1084,21 +1088,21 @@ async fn process_chat_message(
             // Append a runtime-trace.jsonl record so a `zeroclaw doctor`
             // sweep sees gateway WS turns alongside channel and CLI turns.
             // Closes the gateway-side trace gap from #6001.
-            zeroclaw_runtime::observability::runtime_trace::record_event(
-                "gateway_ws_turn",
-                Some("ws"),
-                Some(&provider_label),
-                Some(&state.model),
-                Some(&turn_id),
-                Some(true),
-                None,
-                serde_json::json!({
-                    "session_key": session_key,
-                    "input_tokens": total_input_tokens,
-                    "output_tokens": total_output_tokens,
-                    "tokens_used": total_tokens,
-                    "cost_usd": cost_usd,
-                }),
+            ::zeroclaw_log::record!(
+                INFO,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Complete)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Success)
+                    .with_attrs(::serde_json::json!({
+                        "model_provider": provider_label,
+                        "model": state.model,
+                        "session_key": session_key,
+                        "input_tokens": total_input_tokens,
+                        "output_tokens": total_output_tokens,
+                        "tokens_used": total_tokens,
+                        "cost_usd": cost_usd,
+                        "trace_id": turn_id,
+                    })),
+                "gateway_ws_turn"
             );
         }
         Err(e) => {
@@ -1144,15 +1148,19 @@ async fn process_chat_message(
             // Trace the failed turn so the doctor / replay tool sees the
             // failure mode and the turn_id can be cross-referenced with
             // costs.jsonl. #6001 follow-through.
-            zeroclaw_runtime::observability::runtime_trace::record_event(
-                "gateway_ws_turn",
-                Some("ws"),
-                Some(&provider_label),
-                Some(&state.model),
-                Some(&turn_id),
-                Some(false),
-                Some(&sanitized),
-                serde_json::json!({ "session_key": session_key, "error_code": error_code }),
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                    .with_attrs(::serde_json::json!({
+                        "model_provider": provider_label,
+                        "model": state.model,
+                        "session_key": session_key,
+                        "error": sanitized,
+                        "error_code": error_code,
+                        "trace_id": turn_id,
+                    })),
+                "gateway_ws_turn"
             );
         }
     }

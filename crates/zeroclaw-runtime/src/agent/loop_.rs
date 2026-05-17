@@ -30,7 +30,7 @@ pub fn register_peripheral_tools_fn(f: PeripheralToolsFn) {
     let _ = PERIPHERAL_TOOLS_FN.set(f);
 }
 use crate::cost::types::BudgetCheck;
-use crate::observability::{self, Observer, ObserverEvent, runtime_trace};
+use crate::observability::{self, Observer, ObserverEvent};
 use crate::platform;
 use crate::security::{AutonomyLevel, SecurityPolicy};
 use crate::tools::{self, Tool};
@@ -1084,19 +1084,21 @@ pub async fn run_tool_call_loop(
             model: active_model.to_string(),
             messages_count: history.len(),
         });
-        runtime_trace::record_event(
-            "llm_request",
-            Some(channel_name),
-            Some(active_model_provider_name),
-            Some(active_model),
-            Some(&turn_id),
-            None,
-            None,
-            serde_json::json!({
-                "iteration": iteration + 1,
-                "messages_count": history.len(),
-            }),
-        );
+        {
+            let _provider_guard =
+                ::zeroclaw_log::attribution_span!(active_model_provider).entered();
+            ::zeroclaw_log::record!(
+                INFO,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Send)
+                    .with_attrs(::serde_json::json!({
+                        "iteration": iteration + 1,
+                        "messages_count": history.len(),
+                        "model": active_model,
+                        "trace_id": turn_id,
+                    })),
+                "llm_request"
+            );
+        }
 
         let llm_started_at = Instant::now();
 
@@ -1160,19 +1162,17 @@ pub async fn run_tool_call_loop(
                     })
                 }
                 Err(stream_err) => {
-                    ::zeroclaw_log::record!(WARN, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_outcome(::zeroclaw_log::EventOutcome::Unknown).with_attrs(::serde_json::json!({"model_provider": active_model_provider_name, "model": active_model, "iteration": iteration + 1, "stream_err": stream_err.to_string()})), "model_provider streaming failed, falling back to non-streaming chat: ");
-                    runtime_trace::record_event(
-                        "llm_stream_fallback",
-                        Some(channel_name),
-                        Some(active_model_provider_name),
-                        Some(active_model),
-                        Some(&turn_id),
-                        Some(false),
-                        Some("model_provider stream failed; fallback to non-streaming chat"),
-                        serde_json::json!({
-                            "iteration": iteration + 1,
-                            "error": scrub_credentials(&stream_err.to_string()),
-                        }),
+                    ::zeroclaw_log::record!(
+                        WARN,
+                        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                            .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                            .with_attrs(::serde_json::json!({
+                                "model": active_model,
+                                "iteration": iteration + 1,
+                                "error": scrub_credentials(&stream_err.to_string()),
+                                "trace_id": turn_id,
+                            })),
+                        "llm_stream_fallback: provider stream failed, falling back to non-streaming chat"
                     );
                     {
                         use ::zeroclaw_log::Instrument;
@@ -1330,38 +1330,39 @@ pub async fn run_tool_call_loop(
                     detect_tool_call_parse_issue(&response_text, &calls)
                 };
                 if let Some(ref issue) = parse_issue {
-                    runtime_trace::record_event(
-                        "tool_call_parse_issue",
-                        Some(channel_name),
-                        Some(provider_name),
-                        Some(model),
-                        Some(&turn_id),
-                        Some(false),
-                        Some(issue.as_str()),
-                        serde_json::json!({
-                            "iteration": iteration + 1,
-                            "response": scrub_credentials(&response_text),
-                        }),
+                    ::zeroclaw_log::record!(
+                        WARN,
+                        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                            .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                            .with_attrs(::serde_json::json!({
+                                "model": model,
+                                "iteration": iteration + 1,
+                                "issue": issue.as_str(),
+                                "response": scrub_credentials(&response_text),
+                                "trace_id": turn_id,
+                            })),
+                        "tool_call_parse_issue"
                     );
                 }
 
-                runtime_trace::record_event(
-                    "llm_response",
-                    Some(channel_name),
-                    Some(provider_name),
-                    Some(model),
-                    Some(&turn_id),
-                    Some(true),
-                    None,
-                    serde_json::json!({
-                        "iteration": iteration + 1,
-                        "duration_ms": llm_started_at.elapsed().as_millis(),
-                        "input_tokens": resp_input_tokens,
-                        "output_tokens": resp_output_tokens,
-                        "raw_response": scrub_credentials(&response_text),
-                        "native_tool_calls": resp.tool_calls.len(),
-                        "parsed_tool_calls": calls.len(),
-                    }),
+                ::zeroclaw_log::record!(
+                    INFO,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Receive)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Success)
+                        .with_duration(
+                            u64::try_from(llm_started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        )
+                        .with_attrs(::serde_json::json!({
+                            "model": model,
+                            "iteration": iteration + 1,
+                            "input_tokens": resp_input_tokens,
+                            "output_tokens": resp_output_tokens,
+                            "raw_response": scrub_credentials(&response_text),
+                            "native_tool_calls": resp.tool_calls.len(),
+                            "parsed_tool_calls": calls.len(),
+                            "trace_id": turn_id,
+                        })),
+                    "llm_response"
                 );
 
                 // Preserve native tool call IDs in assistant history so role=tool
@@ -1408,18 +1409,20 @@ pub async fn run_tool_call_loop(
                     input_tokens: None,
                     output_tokens: None,
                 });
-                runtime_trace::record_event(
-                    "llm_response",
-                    Some(channel_name),
-                    Some(provider_name),
-                    Some(model),
-                    Some(&turn_id),
-                    Some(false),
-                    Some(&safe_error),
-                    serde_json::json!({
-                        "iteration": iteration + 1,
-                        "duration_ms": llm_started_at.elapsed().as_millis(),
-                    }),
+                ::zeroclaw_log::record!(
+                    WARN,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                        .with_duration(
+                            u64::try_from(llm_started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        )
+                        .with_attrs(::serde_json::json!({
+                            "model": model,
+                            "iteration": iteration + 1,
+                            "error": safe_error,
+                            "trace_id": turn_id,
+                        })),
+                    "llm_response"
                 );
 
                 // Context overflow recovery: trim history and retry
@@ -1495,18 +1498,17 @@ pub async fn run_tool_call_loop(
         }
 
         if tool_calls.is_empty() {
-            runtime_trace::record_event(
-                "turn_final_response",
-                Some(channel_name),
-                Some(provider_name),
-                Some(model),
-                Some(&turn_id),
-                Some(true),
-                None,
-                serde_json::json!({
-                    "iteration": iteration + 1,
-                    "text": scrub_credentials(&display_text),
-                }),
+            ::zeroclaw_log::record!(
+                INFO,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Complete)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Success)
+                    .with_attrs(::serde_json::json!({
+                        "model": model,
+                        "iteration": iteration + 1,
+                        "text": scrub_credentials(&display_text),
+                        "trace_id": turn_id,
+                    })),
+                "turn_final_response"
             );
             // No tool calls — this is the final response.
             accumulated_display_text.push_str(&display_text);
@@ -1589,19 +1591,22 @@ pub async fn run_tool_call_loop(
                     crate::hooks::HookResult::Cancel(reason) => {
                         ::zeroclaw_log::record!(INFO, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(::serde_json::json!({"tool": call.name, "reason": reason.to_string()})), "tool call cancelled by hook");
                         let cancelled = format!("Cancelled by hook: {reason}");
-                        runtime_trace::record_event(
-                            "tool_call_result",
-                            Some(channel_name),
-                            Some(provider_name),
-                            Some(model),
-                            Some(&turn_id),
-                            Some(false),
-                            Some(&cancelled),
-                            serde_json::json!({
+                        ::zeroclaw_log::record!(
+                            WARN,
+                            ::zeroclaw_log::Event::new(
+                                module_path!(),
+                                ::zeroclaw_log::Action::Cancel
+                            )
+                            .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                            .with_attrs(::serde_json::json!({
+                                "model": model,
                                 "iteration": iteration + 1,
                                 "tool": call.name,
                                 "arguments": scrub_credentials(&tool_args.to_string()),
-                            }),
+                                "result": cancelled,
+                                "trace_id": turn_id,
+                            })),
+                            "tool_call_result"
                         );
                         if let Some(ref tx) = on_delta {
                             let _ = tx
@@ -1705,19 +1710,19 @@ pub async fn run_tool_call_loop(
 
                 if decision == ApprovalResponse::No {
                     let denied = "Denied by user.".to_string();
-                    runtime_trace::record_event(
-                        "tool_call_result",
-                        Some(channel_name),
-                        Some(provider_name),
-                        Some(model),
-                        Some(&turn_id),
-                        Some(false),
-                        Some(&denied),
-                        serde_json::json!({
-                            "iteration": iteration + 1,
-                            "tool": tool_name.clone(),
-                            "arguments": scrub_credentials(&tool_args.to_string()),
-                        }),
+                    ::zeroclaw_log::record!(
+                        WARN,
+                        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Reject)
+                            .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                            .with_attrs(::serde_json::json!({
+                                "model": model,
+                                "iteration": iteration + 1,
+                                "tool": tool_name.clone(),
+                                "arguments": scrub_credentials(&tool_args.to_string()),
+                                "result": denied,
+                                "trace_id": turn_id,
+                            })),
+                        "tool_call_result"
                     );
                     if let Some(ref tx) = on_delta {
                         let _ = tx
@@ -1762,20 +1767,20 @@ pub async fn run_tool_call_loop(
                 let duplicate = format!(
                     "Skipped duplicate tool call '{tool_name}' with identical arguments in this turn."
                 );
-                runtime_trace::record_event(
-                    "tool_call_result",
-                    Some(channel_name),
-                    Some(provider_name),
-                    Some(model),
-                    Some(&turn_id),
-                    Some(false),
-                    Some(&duplicate),
-                    serde_json::json!({
-                        "iteration": iteration + 1,
-                        "tool": tool_name.clone(),
-                        "arguments": scrub_credentials(&tool_args.to_string()),
-                        "deduplicated": true,
-                    }),
+                ::zeroclaw_log::record!(
+                    INFO,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Skip)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                        .with_attrs(::serde_json::json!({
+                            "model": model,
+                            "iteration": iteration + 1,
+                            "tool": tool_name.clone(),
+                            "arguments": scrub_credentials(&tool_args.to_string()),
+                            "result": duplicate,
+                            "deduplicated": true,
+                            "trace_id": turn_id,
+                        })),
+                    "tool_call_result"
                 );
                 if let Some(ref tx) = on_delta {
                     let _ = tx
@@ -1799,19 +1804,17 @@ pub async fn run_tool_call_loop(
                 continue;
             }
 
-            runtime_trace::record_event(
-                "tool_call_start",
-                Some(channel_name),
-                Some(provider_name),
-                Some(model),
-                Some(&turn_id),
-                None,
-                None,
-                serde_json::json!({
-                    "iteration": iteration + 1,
-                    "tool": tool_name.clone(),
-                    "arguments": scrub_credentials(&tool_args.to_string()),
-                }),
+            ::zeroclaw_log::record!(
+                INFO,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Start)
+                    .with_attrs(::serde_json::json!({
+                        "model": model,
+                        "iteration": iteration + 1,
+                        "tool": tool_name.clone(),
+                        "arguments": scrub_credentials(&tool_args.to_string()),
+                        "trace_id": turn_id,
+                    })),
+                "tool_call_start"
             );
 
             // ── Progress: tool start ────────────────────────────
@@ -1881,20 +1884,24 @@ pub async fn run_tool_call_loop(
             .zip(executable_calls.iter())
             .zip(executed_outcomes)
         {
-            runtime_trace::record_event(
-                "tool_call_result",
-                Some(channel_name),
-                Some(provider_name),
-                Some(model),
-                Some(&turn_id),
-                Some(outcome.success),
-                outcome.error_reason.as_deref(),
-                serde_json::json!({
-                    "iteration": iteration + 1,
-                    "tool": call.name.clone(),
-                    "duration_ms": outcome.duration.as_millis(),
-                    "output": scrub_credentials(&outcome.output),
-                }),
+            ::zeroclaw_log::record!(
+                INFO,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Complete)
+                    .with_outcome(if outcome.success {
+                        ::zeroclaw_log::EventOutcome::Success
+                    } else {
+                        ::zeroclaw_log::EventOutcome::Failure
+                    })
+                    .with_duration(u64::try_from(outcome.duration.as_millis()).unwrap_or(u64::MAX),)
+                    .with_attrs(::serde_json::json!({
+                        "model": model,
+                        "iteration": iteration + 1,
+                        "tool": call.name.clone(),
+                        "error_reason": outcome.error_reason,
+                        "output": scrub_credentials(&outcome.output),
+                        "trace_id": turn_id,
+                    })),
+                "tool_call_result"
             );
 
             // ── Hook: after_tool_call (void) ─────────────────
@@ -1992,18 +1999,21 @@ pub async fn run_tool_call_loop(
                         );
                     }
                     crate::agent::loop_detector::LoopDetectionResult::Break(msg) => {
-                        runtime_trace::record_event(
-                            "loop_detector_circuit_breaker",
-                            Some(channel_name),
-                            Some(provider_name),
-                            Some(model),
-                            Some(&turn_id),
-                            Some(false),
-                            Some(&msg),
-                            serde_json::json!({
+                        ::zeroclaw_log::record!(
+                            WARN,
+                            ::zeroclaw_log::Event::new(
+                                module_path!(),
+                                ::zeroclaw_log::Action::Fail
+                            )
+                            .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                            .with_attrs(::serde_json::json!({
+                                "model": model,
                                 "iteration": iteration + 1,
                                 "tool": tool_name,
-                            }),
+                                "message": msg,
+                                "trace_id": turn_id,
+                            })),
+                            "loop_detector_circuit_breaker"
                         );
                         anyhow::bail!("Agent loop aborted by loop detector: {msg}");
                     }
@@ -2061,18 +2071,17 @@ pub async fn run_tool_call_loop(
 
             // Bail if we see 3+ consecutive identical tool outputs (clear runaway).
             if consecutive_identical_outputs >= 3 {
-                runtime_trace::record_event(
-                    "tool_loop_identical_output_abort",
-                    Some(channel_name),
-                    Some(provider_name),
-                    Some(model),
-                    Some(&turn_id),
-                    Some(false),
-                    Some("identical tool output detected 3 consecutive times"),
-                    serde_json::json!({
-                        "iteration": iteration + 1,
-                        "consecutive_identical": consecutive_identical_outputs,
-                    }),
+                ::zeroclaw_log::record!(
+                    WARN,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                        .with_attrs(::serde_json::json!({
+                            "model": model,
+                            "iteration": iteration + 1,
+                            "consecutive_identical": consecutive_identical_outputs,
+                            "trace_id": turn_id,
+                        })),
+                    "tool_loop_identical_output_abort"
                 );
                 anyhow::bail!(
                     "Agent loop aborted: identical tool output detected {} consecutive times",
@@ -2116,17 +2125,16 @@ pub async fn run_tool_call_loop(
         }
     }
 
-    runtime_trace::record_event(
-        "tool_loop_exhausted",
-        Some(channel_name),
-        Some(provider_name),
-        Some(model),
-        Some(&turn_id),
-        Some(false),
-        Some("agent exceeded maximum tool iterations"),
-        serde_json::json!({
-            "max_iterations": max_iterations,
-        }),
+    ::zeroclaw_log::record!(
+        WARN,
+        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+            .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+            .with_attrs(::serde_json::json!({
+                "model": model,
+                "max_iterations": max_iterations,
+                "trace_id": turn_id,
+            })),
+        "tool_loop_exhausted"
     );
 
     // Graceful shutdown: ask the LLM for a final summary without tools

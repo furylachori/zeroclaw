@@ -101,7 +101,7 @@ use zeroclaw_runtime::agent::loop_::{
 };
 use zeroclaw_runtime::approval::ApprovalManager;
 use zeroclaw_runtime::observability::traits::{ObserverEvent, ObserverMetric};
-use zeroclaw_runtime::observability::{self, Observer, runtime_trace};
+use zeroclaw_runtime::observability::{self, Observer};
 use zeroclaw_runtime::platform;
 use zeroclaw_runtime::security::{AutonomyLevel, SecurityPolicy};
 use zeroclaw_runtime::tools::{self, Tool};
@@ -3235,22 +3235,20 @@ async fn process_channel_message_body(
                 );
             }
         }
-        runtime_trace::record_event(
-            "channel_message_no_reply",
-            Some(channel_composite.as_str()),
-            Some(route.model_provider.as_str()),
-            Some(route.model.as_str()),
-            None,
-            Some(true),
-            reason.as_deref(),
-            serde_json::json!({
-                "sender": msg.sender,
-                "elapsed_ms": started_at.elapsed().as_millis(),
-                "phase": "precheck",
-                "kind": format!("{kind:?}"),
-            }),
+        ::zeroclaw_log::record!(
+            INFO,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Skip)
+                .with_duration(u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),)
+                .with_attrs(::serde_json::json!({
+                    "model_provider": route.model_provider,
+                    "model": route.model,
+                    "sender": msg.sender,
+                    "phase": "precheck",
+                    "kind": format!("{kind:?}"),
+                    "reason": reason.as_deref().unwrap_or("no reason provided"),
+                })),
+            "channel_message_no_reply"
         );
-        ::zeroclaw_log::record!(INFO, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(::serde_json::json!({"kind": format!("{:?}", kind), "elapsed_ms": started_at.elapsed().as_millis() as u64, "reason": reason.as_deref().unwrap_or("no reason provided")})), "no reply");
         return;
     }
 
@@ -3646,18 +3644,20 @@ async fn process_channel_message_body(
                     .with_attrs(::serde_json::json!({"sender": msg.sender})),
                 "Cancelled in-flight channel request due to newer message"
             );
-            runtime_trace::record_event(
-                "channel_message_cancelled",
-                Some(channel_composite.as_str()),
-                Some(route.model_provider.as_str()),
-                Some(route.model.as_str()),
-                None,
-                Some(false),
-                Some("cancelled due to newer inbound message"),
-                serde_json::json!({
-                    "sender": msg.sender,
-                    "elapsed_ms": started_at.elapsed().as_millis(),
-                }),
+            ::zeroclaw_log::record!(
+                INFO,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Cancel)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                    .with_duration(
+                        u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    )
+                    .with_attrs(::serde_json::json!({
+                        "model_provider": route.model_provider,
+                        "model": route.model,
+                        "sender": msg.sender,
+                        "reason": "cancelled due to newer inbound message",
+                    })),
+                "channel_message_cancelled"
             );
             if let (Some(channel), Some(draft_id)) =
                 (target_channel.as_ref(), draft_message_id.as_deref())
@@ -3756,19 +3756,20 @@ async fn process_channel_message_body(
                 }
             }
 
-            runtime_trace::record_event(
-                "channel_message_outbound",
-                Some(channel_composite.as_str()),
-                Some(route.model_provider.as_str()),
-                Some(route.model.as_str()),
-                None,
-                Some(true),
-                None,
-                serde_json::json!({
-                    "sender": msg.sender,
-                    "elapsed_ms": started_at.elapsed().as_millis(),
-                    "response": scrub_credentials(&delivered_response),
-                }),
+            ::zeroclaw_log::record!(
+                INFO,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Outbound)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Success)
+                    .with_duration(
+                        u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    )
+                    .with_attrs(::serde_json::json!({
+                        "model_provider": route.model_provider,
+                        "model": route.model,
+                        "sender": msg.sender,
+                        "response": scrub_credentials(&delivered_response),
+                    })),
+                "channel_message_outbound"
             );
 
             // Persist intermediate tool-call/result messages from this turn
@@ -3928,18 +3929,20 @@ async fn process_channel_message_body(
                         .with_attrs(::serde_json::json!({"sender": msg.sender})),
                     "Cancelled in-flight channel request due to newer message"
                 );
-                runtime_trace::record_event(
-                    "channel_message_cancelled",
-                    Some(channel_composite.as_str()),
-                    Some(route.model_provider.as_str()),
-                    Some(route.model.as_str()),
-                    None,
-                    Some(false),
-                    Some("cancelled during tool-call loop"),
-                    serde_json::json!({
-                        "sender": msg.sender,
-                        "elapsed_ms": started_at.elapsed().as_millis(),
-                    }),
+                ::zeroclaw_log::record!(
+                    INFO,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Cancel)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                        .with_duration(
+                            u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        )
+                        .with_attrs(::serde_json::json!({
+                            "model_provider": route.model_provider,
+                            "model": route.model,
+                            "sender": msg.sender,
+                            "reason": "cancelled during tool-call loop",
+                        })),
+                    "channel_message_cancelled"
                 );
                 if let (Some(channel), Some(draft_id)) =
                     (target_channel.as_ref(), draft_message_id.as_deref())
@@ -3964,19 +3967,21 @@ async fn process_channel_message_body(
                     started_at.elapsed().as_millis(),
                     compacted
                 );
-                runtime_trace::record_event(
-                    "channel_message_error",
-                    Some(channel_composite.as_str()),
-                    Some(route.model_provider.as_str()),
-                    Some(route.model.as_str()),
-                    None,
-                    Some(false),
-                    Some("context window exceeded"),
-                    serde_json::json!({
-                        "sender": msg.sender,
-                        "elapsed_ms": started_at.elapsed().as_millis(),
-                        "history_compacted": compacted,
-                    }),
+                ::zeroclaw_log::record!(
+                    WARN,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                        .with_duration(
+                            u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        )
+                        .with_attrs(::serde_json::json!({
+                            "model_provider": route.model_provider,
+                            "model": route.model,
+                            "sender": msg.sender,
+                            "reason": "context window exceeded",
+                            "history_compacted": compacted,
+                        })),
+                    "channel_message_error"
                 );
                 if let Some(channel) = target_channel.as_ref() {
                     if let Some(ref draft_id) = draft_message_id {
@@ -4019,18 +4024,20 @@ async fn process_channel_message_body(
                     }
                 }
                 let safe_error = zeroclaw_providers::sanitize_api_error(&e.to_string());
-                runtime_trace::record_event(
-                    "channel_message_error",
-                    Some(channel_composite.as_str()),
-                    Some(route.model_provider.as_str()),
-                    Some(route.model.as_str()),
-                    None,
-                    Some(false),
-                    Some(&safe_error),
-                    serde_json::json!({
-                        "sender": msg.sender,
-                        "elapsed_ms": started_at.elapsed().as_millis(),
-                    }),
+                ::zeroclaw_log::record!(
+                    WARN,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                        .with_duration(
+                            u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        )
+                        .with_attrs(::serde_json::json!({
+                            "model_provider": route.model_provider,
+                            "model": route.model,
+                            "sender": msg.sender,
+                            "error": safe_error,
+                        })),
+                    "channel_message_error"
                 );
                 let should_rollback_user_turn = should_rollback_failed_user_turn(&e);
                 let rolled_back = should_rollback_user_turn
@@ -4066,18 +4073,20 @@ async fn process_channel_message_body(
                 "LLM response timed out after {}s (base={}s, max_tool_iterations={})",
                 timeout_budget_secs, ctx.message_timeout_secs, ctx.max_tool_iterations
             );
-            runtime_trace::record_event(
-                "channel_message_timeout",
-                Some(channel_composite.as_str()),
-                Some(route.model_provider.as_str()),
-                Some(route.model.as_str()),
-                None,
-                Some(false),
-                Some(&timeout_msg),
-                serde_json::json!({
-                    "sender": msg.sender,
-                    "elapsed_ms": started_at.elapsed().as_millis(),
-                }),
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Timeout)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                    .with_duration(
+                        u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    )
+                    .with_attrs(::serde_json::json!({
+                        "model_provider": route.model_provider,
+                        "model": route.model,
+                        "sender": msg.sender,
+                        "reason": timeout_msg,
+                    })),
+                "channel_message_timeout"
             );
             eprintln!(
                 "  ❌ {} (elapsed: {}ms)",

@@ -1,15 +1,14 @@
-//! Compatibility shim: the actual log surface lives in `zeroclaw-log`.
-//! This module is retained only so existing in-tree callers
-//! (`agent::loop_`, the gateway's `ws.rs`, the channel orchestrator, and
-//! the doctor command) can keep importing `runtime_trace::...` while the
-//! workspace transitions to direct `zeroclaw_log::...` use.
+//! Compatibility shim for the doctor command's log-reading utilities.
 //!
-//! Everything here forwards to `zeroclaw_log` with no behavior change.
-//! New call sites should reach for `zeroclaw_log::record!` directly.
+//! The legacy positional-arg `record_event` shim was retired in favor of
+//! direct `zeroclaw_log::record!` invocations carrying typed attribution
+//! via `attribution_span!`. This module survives only as the doctor
+//! command's path-resolution + load surface; new emission code goes
+//! directly to `zeroclaw_log::record!`.
 
 use std::path::Path;
 
-use zeroclaw_log::{EventCategory, EventOutcome, LogEvent, Severity};
+use zeroclaw_log::LogEvent;
 
 pub use zeroclaw_log::{LogEvent as RuntimeTraceEvent, LogFilter, LogPage};
 
@@ -41,83 +40,6 @@ pub fn resolve_trace_path(
     policy.path
 }
 
-/// Legacy entry point. Bridges the pre-v0.8.0 positional-arg interface to
-/// the new structured [`LogEvent`]. Prefer `zeroclaw_log::record!` at new
-/// call sites — it handles alias-bound splitting automatically and lets
-/// `tracing::event!` carry the correct call-site source info.
-#[allow(clippy::too_many_arguments)]
-pub fn record_event(
-    event_type: &str,
-    channel: Option<&str>,
-    model_provider: Option<&str>,
-    model: Option<&str>,
-    turn_id: Option<&str>,
-    success: Option<bool>,
-    message: Option<&str>,
-    payload: serde_json::Value,
-) {
-    record_event_with_agent(
-        event_type,
-        channel,
-        model_provider,
-        model,
-        turn_id,
-        success,
-        message,
-        None,
-        payload,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn record_event_with_agent(
-    event_type: &str,
-    channel: Option<&str>,
-    model_provider: Option<&str>,
-    model: Option<&str>,
-    turn_id: Option<&str>,
-    success: Option<bool>,
-    message: Option<&str>,
-    agent_alias: Option<&str>,
-    payload: serde_json::Value,
-) {
-    let severity = if matches!(success, Some(false)) {
-        Severity::Warn
-    } else {
-        Severity::Info
-    };
-    let category = category_for_action(event_type);
-    let mut event = LogEvent::new(severity, event_type, category);
-    let outcome = match success {
-        Some(true) => EventOutcome::Success,
-        Some(false) => EventOutcome::Failure,
-        None => EventOutcome::Unknown,
-    };
-    event.set_outcome(outcome);
-    if let Some(channel) = channel {
-        event.zeroclaw.set_composite("channel", channel);
-    }
-    if let Some(provider_composite) = model_provider {
-        event
-            .zeroclaw
-            .set_composite("model_provider", provider_composite);
-    }
-    if let Some(model) = model {
-        event.zeroclaw.set("model", model);
-    }
-    if let Some(turn) = turn_id {
-        event.trace_id = Some(turn.to_string());
-    }
-    if let Some(agent) = agent_alias {
-        event.zeroclaw.set("agent_alias", agent);
-    }
-    if let Some(msg) = message {
-        event.message = Some(msg.to_string());
-    }
-    event.attributes = payload;
-    zeroclaw_log::record_event(event);
-}
-
 /// Load a page of events. Replaces the old `load_events` shape with a
 /// thin wrapper around the new paginated reader. The legacy
 /// `event_filter` (single action match) and `contains` (substring) args
@@ -140,17 +62,4 @@ pub fn load_events(
 /// Lookup a single event by id.
 pub fn find_event_by_id(path: &Path, id: &str) -> anyhow::Result<Option<LogEvent>> {
     zeroclaw_log::find_event_by_id(path, id)
-}
-
-fn category_for_action(action: &str) -> EventCategory {
-    match action {
-        "llm_request" | "agent_start" | "agent_end" => EventCategory::Agent,
-        "tool_call" | "tool_call_start" | "tool_call_result" => EventCategory::Tool,
-        "channel_message_inbound" | "channel_send" => EventCategory::Channel,
-        "cron_run" => EventCategory::Cron,
-        "memory_store" | "memory_recall" | "memory_forget" => EventCategory::Memory,
-        "session_open" | "session_close" | "gateway_ws_turn" => EventCategory::Session,
-        "error" => EventCategory::System,
-        _ => EventCategory::System,
-    }
 }
