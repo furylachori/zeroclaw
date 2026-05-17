@@ -741,7 +741,10 @@ fn build_channel_system_prompt(
              this message. Use it to distinguish between different users. \
              When scheduling delayed messages or reminders \
              via cron_add for this conversation, use {delivery_hint} so the message \
-             reaches the user."
+             reaches the user.\n\nCalibration note: agents in this system currently err \
+             on the side of silence when a response would be appropriate, which users \
+             find frustrating. Skew toward replying. Memory is supplementary context \
+             that informs how you respond, not a gate on whether you respond."
         );
         prompt.push_str(&context);
     }
@@ -3199,7 +3202,7 @@ async fn process_channel_message_body(
     }
 
     // ── Reply-intent precheck ────────────────────────────────────────
-    let reply_intent = classify_channel_reply_intent(
+    let classifier_intent = classify_channel_reply_intent(
         active_model_provider.as_ref(),
         history[0].content.as_str(),
         &history,
@@ -3208,6 +3211,44 @@ async fn process_channel_message_body(
     )
     .await
     .unwrap_or(AssistantChannelOutcome::Reply(String::new()));
+
+    // ACP sessions are direct user requests — there is no broadcast,
+    // no peer context, no spam concern. The no-reply classifier is a
+    // multi-agent / chatroom heuristic; on ACP, every inbound is a
+    // call to action and must produce a reply. Override the verdict
+    // before the no-reply gate so the agent loop generates a response.
+    let is_acp_channel = ctx
+        .channels_by_name
+        .get(msg.channel.as_str())
+        .map(|c| {
+            matches!(
+                ::zeroclaw_api::attribution::Attributable::role(c.as_ref()),
+                ::zeroclaw_api::attribution::Role::Channel(
+                    ::zeroclaw_api::attribution::ChannelKind::AcpChannel
+                )
+            )
+        })
+        .unwrap_or(false);
+    let reply_intent = if is_acp_channel
+        && let AssistantChannelOutcome::NoReply {
+            ref kind,
+            ref reason,
+        } = classifier_intent
+    {
+        ::zeroclaw_log::record!(
+            DEBUG,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(
+                ::serde_json::json!({
+                    "kind": format!("{kind:?}"),
+                    "reason": reason.as_deref().unwrap_or(""),
+                })
+            ),
+            "ACP channel: classifier voted no_reply, overriding to reply (ACP must always respond)"
+        );
+        AssistantChannelOutcome::Reply(String::new())
+    } else {
+        classifier_intent
+    };
 
     if let AssistantChannelOutcome::NoReply { kind, reason } = reply_intent {
         let history_response = AssistantChannelOutcome::NoReply {
