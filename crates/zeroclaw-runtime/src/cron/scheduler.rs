@@ -447,9 +447,15 @@ async fn run_agent_job(
     // agent loop. Without this the loop reconstructs from config and
     // any future caller-supplied narrowing override would silently
     // collapse back to the parent's verbatim policy.
+    //
+    // `is_subagent: false` is explicit (not `..Default::default()`) so
+    // a future refactor that flips the default can't quietly promote
+    // every cron-launched agent to a depth-1 subagent — they're
+    // top-level runs by design, despite riding through SubAgentSpawn.
     let run_overrides = crate::agent::loop_::AgentRunOverrides {
         security: Some(subagent_ctx.policy.clone()),
         memory: None,
+        is_subagent: false,
     };
     let run_result = match job.session_target {
         SessionTarget::Main | SessionTarget::Isolated => {

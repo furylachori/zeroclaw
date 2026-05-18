@@ -672,6 +672,7 @@ impl Agent {
             agent_model_provider.and_then(|e| e.api_key.as_deref()),
             config,
             None,
+            false,
         );
 
         // ── Wire MCP tools (non-fatal) ─────────────────────────────

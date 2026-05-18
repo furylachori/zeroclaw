@@ -648,6 +648,7 @@ pub async fn run_gateway(
                     .and_then(|e| e.api_key.as_deref()),
                 &config,
                 Some(canvas_store.clone()),
+                false,
             );
             (tools_registry_raw, delegate_handle_gw)
         }

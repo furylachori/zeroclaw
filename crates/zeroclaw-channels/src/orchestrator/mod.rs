@@ -6504,6 +6504,7 @@ pub async fn start_channels(
             agent_provider_entry.and_then(|e| e.api_key.as_deref()),
             &config,
             canvas_store.clone(),
+            false,
         );
 
         // Wire MCP tools into the per-agent registry before freezing —

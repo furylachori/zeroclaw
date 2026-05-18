@@ -2289,6 +2289,13 @@ fn retain_registered_tool_descriptions(
 pub struct AgentRunOverrides {
     pub security: Option<Arc<SecurityPolicy>>,
     pub memory: Option<Arc<dyn Memory>>,
+    /// `true` when the run is a SubAgent invocation. SubAgents must not
+    /// spawn further subagents (depth-1 cap). The agent loop reads this
+    /// when constructing the `spawn_subagent` tool so the depth-cap
+    /// refusal fires at the tool, not after a child run is already
+    /// underway. Default `false` keeps top-level / cron-launched /
+    /// CLI-launched agents at depth 0.
+    pub is_subagent: bool,
 }
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
@@ -2351,6 +2358,7 @@ pub async fn run(
         let observer: Arc<dyn Observer> = Arc::from(base_observer);
         let runtime: Arc<dyn platform::RuntimeAdapter> =
             Arc::from(platform::create_runtime(&config.runtime)?);
+        let is_subagent_caller = overrides.is_subagent;
         let security = match overrides.security {
             Some(sec) => sec,
             None => Arc::new(SecurityPolicy::for_agent(&config, agent_alias)?),
@@ -2430,6 +2438,7 @@ pub async fn run(
             agent_model_provider.and_then(|e| e.api_key.as_deref()),
             &config,
             None,
+            is_subagent_caller,
         );
 
         let peripheral_tools: Vec<Box<dyn Tool>> = if let Some(f) = PERIPHERAL_TOOLS_FN.get() {
@@ -3711,6 +3720,7 @@ pub async fn process_message(
                 .and_then(|e| e.api_key.as_deref()),
             &config,
             None,
+            false,
         );
         let peripheral_tools: Vec<Box<dyn Tool>> = if let Some(f) = PERIPHERAL_TOOLS_FN.get() {
             f(config.peripherals.clone()).await.unwrap_or_default()

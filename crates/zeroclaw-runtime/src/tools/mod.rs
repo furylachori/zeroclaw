@@ -318,6 +318,7 @@ pub fn all_tools(
     fallback_api_key: Option<&str>,
     root_config: &zeroclaw_config::schema::Config,
     canvas_store: Option<CanvasStore>,
+    is_subagent_caller: bool,
 ) -> (
     Vec<Box<dyn Tool>>,
     Option<DelegateParentToolsHandle>,
@@ -343,6 +344,7 @@ pub fn all_tools(
         fallback_api_key,
         root_config,
         canvas_store,
+        is_subagent_caller,
     )
 }
 
@@ -369,6 +371,7 @@ pub fn all_tools_with_runtime(
     fallback_api_key: Option<&str>,
     root_config: &zeroclaw_config::schema::Config,
     canvas_store: Option<CanvasStore>,
+    is_subagent_caller: bool,
 ) -> (
     Vec<Box<dyn Tool>>,
     Option<DelegateParentToolsHandle>,
@@ -434,10 +437,10 @@ pub fn all_tools_with_runtime(
             root_config.clone(),
             agent_alias,
         )),
-        Arc::new(SpawnSubagentTool::new(
-            Arc::new(root_config.clone()),
-            agent_alias,
-        )),
+        Arc::new(
+            SpawnSubagentTool::new(Arc::new(root_config.clone()), agent_alias)
+                .with_subagent_caller(is_subagent_caller),
+        ),
         Arc::new(SendMessageToPeerTool::new(
             Arc::new(root_config.clone()),
             agent_alias,
@@ -1200,6 +1203,7 @@ mod tests {
             None,
             &cfg,
             None,
+            false,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"browser_open"));
@@ -1245,6 +1249,7 @@ mod tests {
             None,
             &cfg,
             None,
+            false,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"browser_open"));
@@ -1391,6 +1396,7 @@ mod tests {
             Some("delegate-test-credential"),
             &cfg,
             None,
+            false,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"delegate"));
@@ -1427,6 +1433,7 @@ mod tests {
             None,
             &cfg,
             None,
+            false,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"delegate"));
@@ -1465,6 +1472,7 @@ mod tests {
             None,
             &cfg,
             None,
+            false,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"read_skill"));
@@ -1502,6 +1510,7 @@ mod tests {
             None,
             &cfg,
             None,
+            false,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"read_skill"));

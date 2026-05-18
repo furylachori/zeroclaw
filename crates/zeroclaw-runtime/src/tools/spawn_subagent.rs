@@ -20,6 +20,11 @@ use zeroclaw_log::scope;
 pub struct SpawnSubagentTool {
     config: Arc<Config>,
     parent_alias: String,
+    /// `true` when this tool is registered inside a run that is itself
+    /// a SubAgent. Triggers a depth-1 cap refusal in `execute` before
+    /// any spawn work happens. Set by the agent loop from
+    /// `AgentRunOverrides.is_subagent` at registry construction time.
+    is_subagent_caller: bool,
 }
 
 impl SpawnSubagentTool {
@@ -27,7 +32,17 @@ impl SpawnSubagentTool {
         Self {
             config,
             parent_alias: parent_alias.into(),
+            is_subagent_caller: false,
         }
+    }
+
+    /// Mark this tool instance as belonging to a SubAgent's tool
+    /// registry. Triggers the depth-1 refusal on `execute`. The agent
+    /// loop sets this from `AgentRunOverrides.is_subagent`.
+    #[must_use]
+    pub fn with_subagent_caller(mut self, is_subagent_caller: bool) -> Self {
+        self.is_subagent_caller = is_subagent_caller;
+        self
     }
 }
 
@@ -61,6 +76,45 @@ impl Tool for SpawnSubagentTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
+        // Depth-1 cap: a SubAgent may not spawn its own subagents.
+        // The caller-side flag is set at registry construction time
+        // from `AgentRunOverrides.is_subagent`, so the refusal fires
+        // before any spawn work and before the risk_profile gate.
+        if self.is_subagent_caller {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(
+                    "spawn_subagent: a subagent may not spawn its own subagents (depth-1 cap)"
+                        .into(),
+                ),
+            });
+        }
+
+        // risk_profile gate: a parent's risk_profile.allowed_tools that
+        // omits `spawn_subagent` must refuse pre-spawn. The agent-loop
+        // dispatch filter (apply_policy_tool_filter) already drops the
+        // tool from the registry when the policy excludes it, but this
+        // tool also runs from cron and other registry construction
+        // sites that don't currently apply the filter; refuse here so
+        // the gate is honored everywhere the tool is reachable.
+        let risk_profile = self.config.risk_profile_for_agent(&self.parent_alias);
+        if let Some(rp) = risk_profile {
+            let excluded = rp.excluded_tools.iter().any(|t| t == "spawn_subagent");
+            let allowed_when_listed = rp.allowed_tools.is_empty()
+                || rp.allowed_tools.iter().any(|t| t == "spawn_subagent");
+            if excluded || !allowed_when_listed {
+                return Ok(ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!(
+                        "spawn_subagent: refused — agent '{}' risk_profile does not list spawn_subagent in allowed_tools",
+                        self.parent_alias
+                    )),
+                });
+            }
+        }
+
         // Argument validation surfaces as a structured `ToolResult`
         // failure (matching the unknown-parent and run-failure shapes
         // below) so the agent loop receives a uniform "tool reported
@@ -81,9 +135,6 @@ impl Tool for SpawnSubagentTool {
             }
         };
 
-        // The agent-loop tool inherits the parent's identity verbatim;
-        // narrowing-override knobs land on the tool argument schema
-        // alongside the [agents.<alias>].subagent_* config block.
         let subagent_ctx = match SubAgentSpawn::for_agent(&self.config, &self.parent_alias)
             .and_then(|spawn| spawn.build(SubAgentOverrides::default()))
         {
@@ -107,14 +158,13 @@ impl Tool for SpawnSubagentTool {
 
         // Pass the validated SubAgent context as run-time overrides so
         // the subset-confirmed policy reaches the agent loop instead
-        // of being silently re-derived from config. Memory override
-        // stays `None` for v0.8.0 inherits-verbatim — once the
-        // `[agents.<alias>].subagent_*` config block lands, the
-        // validated allowlist will plumb a narrowed AgentScopedMemory
-        // into this slot.
+        // of being silently re-derived from config. `is_subagent: true`
+        // marks the child run so its own SpawnSubagentTool is
+        // registered with the depth-cap refusal armed.
         let run_overrides = AgentRunOverrides {
             security: Some(subagent_ctx.policy.clone()),
             memory: None,
+            is_subagent: true,
         };
         let parent_alias = subagent_ctx.parent_alias.clone();
         let run_result = Box::pin(scope!(
