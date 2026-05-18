@@ -277,6 +277,7 @@ pub async fn run(
             "dream",
             initial_backoff,
             max_backoff,
+            Some(event_tx.clone()),
             move || {
                 let cfg = dream_cfg.clone();
                 async move { Box::pin(run_dream_worker(cfg)).await }
