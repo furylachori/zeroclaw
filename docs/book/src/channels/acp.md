@@ -51,10 +51,15 @@ The server always responds `protocolVersion: 1`. If you send a client-side `prot
 
 ### `session/new`
 
-Open an isolated agent session. The optional `cwd` parameter (aliases: `workspaceDir`, `workspace_dir`) pins the per-session file-access boundary — it becomes the `workspace_dir` inside the `SecurityPolicy` that all file tools enforce. The agent's persistent data directory (memory, identity, cron) remains the daemon-level `workspace_dir` from config.
+Open an isolated agent session.
+
+**`agentAlias`** names which configured `[agents.<alias>]` entry to use. It is required when more than one agent is configured; when exactly one agent exists, it is auto-selected and the field may be omitted. The alias accepts the camelCase `agentAlias`, the snake_case `agent_alias`, or the short `agent` form.
+
+The optional **`cwd`** parameter (aliases: `workspaceDir`, `workspace_dir`) pins the per-session file-access boundary — it becomes the `workspace_dir` inside the `SecurityPolicy` that all file tools enforce. The agent's persistent data directory (memory, identity, cron) remains the daemon-level `workspace_dir` from config.
 
 ```json
 → {"jsonrpc":"2.0","id":2,"method":"session/new","params":{
+    "agentAlias": "myagent",
     "cwd": "/path/to/project"
   }}
 ← {"jsonrpc":"2.0","id":2,"result":{
@@ -208,9 +213,23 @@ zeroclaw acp
 
 The binary reads stdin, writes stdout, exits on EOF.
 
-**As a WebSocket service (daemon mode):**
+**Via the daemon gateway (remote or same-host):**
 
-Start the daemon normally. The gateway always exposes ACP over WebSocket at the `/acp` endpoint — no extra config flag is required.
+Start the daemon normally. The gateway always exposes ACP over WebSocket at `/acp` — no extra config flag is required. Clients connect directly, or through `zeroclaw-acp-bridge`, which bridges the stdio ACP protocol to the gateway WebSocket:
+
+```bash
+zeroclaw-acp-bridge
+```
+
+The bridge reads the gateway address and auth token from the same `config.toml` as the daemon. When the daemon runs with a non-default config directory (e.g. `--config-dir /tmp/zeroclaw`), point the bridge at the same directory:
+
+```bash
+zeroclaw-acp-bridge --config-dir /tmp/zeroclaw
+# or equivalently:
+zeroclaw-acp-bridge --config-dir=/tmp/zeroclaw
+```
+
+You can also supply the bearer token directly via `ZEROCLAW_ACP_BRIDGE_TOKEN` if you prefer not to rely on the cached token file.
 
 ## Version compatibility
 
