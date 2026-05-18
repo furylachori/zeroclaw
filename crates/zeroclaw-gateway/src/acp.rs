@@ -59,11 +59,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let (output_tx, mut output_rx) = mpsc::channel::<String>(256);
 
     let config = state.config.read().clone();
-    let server = Arc::new(AcpServer::new_with_writer(
-        config,
-        AcpServerConfig::default(),
-        output_tx,
-    ));
+    let acp_config = AcpServerConfig {
+        max_sessions: config.acp.max_sessions,
+        session_timeout_secs: config.acp.session_timeout_secs,
+    };
+    let server = Arc::new(AcpServer::new_with_writer(config, acp_config, output_tx));
 
     let server_task = tokio::spawn(Arc::clone(&server).run_messages(input_rx));
 

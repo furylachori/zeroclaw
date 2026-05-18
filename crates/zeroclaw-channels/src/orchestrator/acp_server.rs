@@ -601,6 +601,7 @@ impl AcpServer {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string)
+            .or_else(|| self.config.acp.default_agent.clone())
             .or_else(|| {
                 let mut keys = self.config.agents.keys();
                 if self.config.agents.len() == 1 {
@@ -1521,6 +1522,124 @@ mod tests {
             "error should mention agentAlias, got: {}",
             err.message
         );
+    }
+
+    #[tokio::test]
+    async fn session_new_uses_config_default_agent_when_alias_omitted_and_multiple_agents() {
+        let cwd = tempfile::tempdir().unwrap();
+        let mut config = Config {
+            data_dir: cwd.path().to_path_buf(),
+            providers: {
+                let mut p = zeroclaw_config::providers::Providers::default();
+                p.models.openrouter.insert(
+                    "default".to_string(),
+                    zeroclaw_config::schema::OpenRouterModelProviderConfig {
+                        base: zeroclaw_config::schema::ModelProviderConfig {
+                            api_key: Some("test-key".to_string()),
+                            model: Some("test-model".to_string()),
+                            ..Default::default()
+                        },
+                    },
+                );
+                p
+            },
+            ..Default::default()
+        };
+        config.risk_profiles.insert(
+            "default".to_string(),
+            zeroclaw_config::schema::RiskProfileConfig::default(),
+        );
+        config.agents.insert(
+            "agent-alpha".to_string(),
+            zeroclaw_config::schema::AliasedAgentConfig {
+                model_provider: "openrouter.default".into(),
+                risk_profile: "default".to_string(),
+                ..Default::default()
+            },
+        );
+        config.agents.insert(
+            "agent-beta".to_string(),
+            zeroclaw_config::schema::AliasedAgentConfig {
+                model_provider: "openrouter.default".into(),
+                risk_profile: "default".to_string(),
+                ..Default::default()
+            },
+        );
+        config.acp.default_agent = Some("agent-alpha".to_string());
+        let server = AcpServer::new(config, AcpServerConfig::default());
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            server.handle_session_new(&serde_json::json!({
+                "cwd": cwd.path().to_string_lossy(),
+                "mcpServers": []
+            })),
+        )
+        .await
+        .expect("should not block")
+        .expect("should select agent-alpha from config.acp.default_agent");
+
+        assert!(result["sessionId"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn session_new_explicit_alias_overrides_config_default_agent() {
+        let cwd = tempfile::tempdir().unwrap();
+        let mut config = Config {
+            data_dir: cwd.path().to_path_buf(),
+            providers: {
+                let mut p = zeroclaw_config::providers::Providers::default();
+                p.models.openrouter.insert(
+                    "default".to_string(),
+                    zeroclaw_config::schema::OpenRouterModelProviderConfig {
+                        base: zeroclaw_config::schema::ModelProviderConfig {
+                            api_key: Some("test-key".to_string()),
+                            model: Some("test-model".to_string()),
+                            ..Default::default()
+                        },
+                    },
+                );
+                p
+            },
+            ..Default::default()
+        };
+        config.risk_profiles.insert(
+            "default".to_string(),
+            zeroclaw_config::schema::RiskProfileConfig::default(),
+        );
+        config.agents.insert(
+            "agent-alpha".to_string(),
+            zeroclaw_config::schema::AliasedAgentConfig {
+                model_provider: "openrouter.default".into(),
+                risk_profile: "default".to_string(),
+                ..Default::default()
+            },
+        );
+        config.agents.insert(
+            "agent-beta".to_string(),
+            zeroclaw_config::schema::AliasedAgentConfig {
+                model_provider: "openrouter.default".into(),
+                risk_profile: "default".to_string(),
+                ..Default::default()
+            },
+        );
+        config.acp.default_agent = Some("agent-alpha".to_string());
+        let server = AcpServer::new(config, AcpServerConfig::default());
+
+        // Explicit alias should win over config default
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            server.handle_session_new(&serde_json::json!({
+                "agentAlias": "agent-beta",
+                "cwd": cwd.path().to_string_lossy(),
+                "mcpServers": []
+            })),
+        )
+        .await
+        .expect("should not block")
+        .expect("should use agent-beta despite default_agent = agent-alpha");
+
+        assert!(result["sessionId"].as_str().is_some());
     }
 
     #[test]

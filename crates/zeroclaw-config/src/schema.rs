@@ -220,6 +220,11 @@ pub struct Config {
     #[nested]
     pub cron: HashMap<String, CronJobDecl>,
 
+    /// ACP (Agent Client Protocol) server configuration (`[acp]`).
+    #[serde(default)]
+    #[nested]
+    pub acp: AcpConfig,
+
     /// Channel configurations: Telegram, Discord, Slack, etc. (`[channels]`).
     #[serde(default, alias = "channels_config")]
     #[nested]
@@ -9525,6 +9530,45 @@ fn default_max_run_history() -> u32 {
     50
 }
 
+// ── ACP ──────────────────────────────────────────────────────────
+
+/// ACP (Agent Client Protocol) server configuration (`[acp]` section).
+#[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[prefix = "acp"]
+pub struct AcpConfig {
+    /// Agent alias to use when `session/new` omits `agentAlias` and more than
+    /// one agent is configured. When exactly one agent exists it is
+    /// auto-selected regardless of this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<String>,
+    /// Maximum number of concurrent ACP sessions. Default: `10`.
+    #[serde(default = "default_acp_max_sessions")]
+    pub max_sessions: usize,
+    /// Idle session timeout in seconds. Sessions with no activity for this
+    /// duration are eligible for eviction. Default: `3600` (1 hour).
+    #[serde(default = "default_acp_session_timeout_secs")]
+    pub session_timeout_secs: u64,
+}
+
+fn default_acp_max_sessions() -> usize {
+    10
+}
+
+fn default_acp_session_timeout_secs() -> u64 {
+    3600
+}
+
+impl Default for AcpConfig {
+    fn default() -> Self {
+        Self {
+            default_agent: None,
+            max_sessions: default_acp_max_sessions(),
+            session_timeout_secs: default_acp_session_timeout_secs(),
+        }
+    }
+}
+
 // ── Tunnel ──────────────────────────────────────────────────────
 
 /// Tunnel configuration for exposing the gateway publicly (`[tunnel]` section).
@@ -12604,6 +12648,7 @@ impl Default for Config {
             pipeline: PipelineConfig::default(),
             heartbeat: HeartbeatConfig::default(),
             cron: HashMap::new(),
+            acp: AcpConfig::default(),
             channels: ChannelsConfig::default(),
             memory: MemoryConfig::default(),
             storage: StorageConfig::default(),
@@ -15726,6 +15771,7 @@ auto_save = true
                 ..HeartbeatConfig::default()
             },
             cron: HashMap::new(),
+            acp: AcpConfig::default(),
             channels: ChannelsConfig {
                 cli: true,
                 telegram: HashMap::from([(
@@ -16374,6 +16420,7 @@ default_temperature = 0.7
             query_classification: QueryClassificationConfig::default(),
             heartbeat: HeartbeatConfig::default(),
             cron: HashMap::new(),
+            acp: AcpConfig::default(),
             channels: ChannelsConfig::default(),
             memory: MemoryConfig::default(),
             storage: StorageConfig::default(),

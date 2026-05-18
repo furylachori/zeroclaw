@@ -197,9 +197,15 @@ ZeroClaw also accepts inbound `session/update` (and the legacy `session/event` a
 
 ```toml
 [acp]
+# Which agent to use when session/new omits agentAlias.
+# Falls back to auto-select when exactly one agent is configured.
+default_agent = "myagent"
+
 max_sessions = 10
 session_timeout_secs = 3600       # idle sessions killed after 1 hour
 ```
+
+All three fields are optional. `default_agent` is consulted when `session/new` omits `agentAlias` and more than one agent is configured; if it is absent and exactly one `[agents.<alias>]` entry exists, that agent is auto-selected.
 
 When running `zeroclaw acp` as a subprocess, the command starts the server unconditionally. When running as a daemon, the gateway exposes ACP over WebSocket at `/acp` with no additional config required.
 
