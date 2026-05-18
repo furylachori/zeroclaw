@@ -111,7 +111,7 @@ Tail your log. The tool-spawned child runs inside a `scope!` that emits a tracin
 
 Cron-launched agent jobs use a different, more explicit span name: `subagent` (literal) with fields `category="cron"`, `agent_alias=<owning agent>`, `cron_job_id=<id>`, `run_id=<uuid>`, `spawn_site="cron"`. Cron paths are trivially greppable: `grep 'spawn_site="cron"' zeroclaw.log`. Note that cron-launched runs are top-level (`is_subagent=false`); they may themselves call `spawn_subagent` once.
 
-This is a thin signal for the agent-loop spawn path. A dedicated "subagent started / completed" record is tracked as a code-side follow-up.
+This is a thin signal for the agent-loop spawn path. A dedicated "subagent started / completed" record routed through `attribution_span!(tool)` is tracked as a code-side follow-up — once the agent loop wraps tool execution in an attribution span, every `record!` inside the tool will carry `tool=spawn_subagent` automatically and the question becomes a trivial grep.
 
 ### `delegate`: output strings the model sees
 

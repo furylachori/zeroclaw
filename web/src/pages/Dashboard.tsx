@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Clock,
   Globe,
@@ -10,13 +11,82 @@ import {
   Users,
   MessageSquare,
   Wifi,
+  Plus,
+  Trash2,
+  Eye,
+  X,
+  Bot,
+  Filter,
+  Heart,
+  ChevronRight,
+  Cpu,
+  MemoryStick,
+  Brain,
+  Search,
 } from 'lucide-react';
-import type { StatusResponse, CostSummary, Session, ChannelDetail } from '@/types/api';
-import { getStatus, getCost, getSessions, getChannels } from '@/lib/api';
+import type {
+  StatusResponse,
+  CostSummary,
+  Session,
+  ChannelDetail,
+  SessionMessageRow,
+  ProcessStats,
+} from '@/types/api';
+import {
+  getStatus,
+  getCost,
+  getSessions,
+  getChannels,
+  getSessionMessages,
+  deleteSession,
+  getMemory,
+  storeMemory,
+  deleteMemory,
+  getMapKeys,
+} from '@/lib/api';
+import { resolveModelToProviderType } from '@/lib/configuredModels';
+
+type CostWindow = 'today' | '7d' | '30d' | 'month' | 'all';
+
+function costWindowBounds(window: CostWindow): { from?: Date; to?: Date } {
+  const now = new Date();
+  switch (window) {
+    case 'today': {
+      const start = new Date(now);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(start);
+      end.setDate(end.getDate() + 1);
+      return { from: start, to: end };
+    }
+    case '7d': {
+      const from = new Date(now);
+      from.setDate(from.getDate() - 7);
+      return { from };
+    }
+    case '30d': {
+      const from = new Date(now);
+      from.setDate(from.getDate() - 30);
+      return { from };
+    }
+    case 'month': {
+      const from = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+      const to = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
+      return { from, to };
+    }
+    case 'all':
+    default:
+      return {};
+  }
+}
+import type { MemoryEntry } from '@/types/api';
+import { loadAgentSummaries, toggleAgentEnabled, type AgentSummary } from '@/lib/agents';
+import AgentCard from '@/components/AgentCard';
+import EntityLink from '@/components/EntityLink';
+import EntityEnabledToggle from '@/components/EntityEnabledToggle';
 import { useSSE } from '@/hooks/useSSE';
 import { t } from '@/lib/i18n';
 
-type TabId = 'overview' | 'sessions' | 'channels';
+type TabId = 'overview' | 'sessions' | 'channels' | 'memories' | 'health' | 'cost';
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);
@@ -219,6 +289,9 @@ const TABS: { id: TabId; labelKey: string; icon: typeof LayoutDashboard }[] = [
   { id: 'overview', labelKey: 'dashboard.tab_overview', icon: LayoutDashboard },
   { id: 'sessions', labelKey: 'dashboard.tab_sessions', icon: Users },
   { id: 'channels', labelKey: 'dashboard.tab_channels', icon: Wifi },
+  { id: 'memories', labelKey: 'dashboard.tab_memories', icon: Brain },
+  { id: 'health', labelKey: 'dashboard.tab_health', icon: Heart },
+  { id: 'cost', labelKey: 'dashboard.tab_cost', icon: DollarSign },
 ];
 
 // ---------------------------------------------------------------------------
@@ -255,10 +328,12 @@ function OverviewTab({
               </div>
               <span className="text-xs uppercase tracking-wider font-medium" style={{ color: "var(--pc-text-muted)" }}>{t(labelKey)}</span>
             </div>
-            <p className="text-lg font-semibold truncate capitalize" style={{ color: "var(--pc-text-primary)" }}>{getValue(status)}</p>
+            <p className="text-lg font-semibold truncate" style={{ color: "var(--pc-text-primary)" }}>{getValue(status)}</p>
             <p className="text-sm truncate" style={{ color: "var(--pc-text-muted)" }}>{getSub(status)}</p>
           </div>
         ))}
+        <ProcessRamCard process={status.process} />
+        <ProcessCpuCard process={status.process} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 stagger-children">
@@ -386,40 +461,37 @@ function OverviewTab({
                 );
               }
               return entries.map(([name, active]) => (
-                <div
+                <EntityLink
                   key={name}
-                  className="flex items-center justify-between py-2.5 px-3 rounded-xl transition-all"
-                  style={{ background: "var(--pc-bg-elevated)" }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "var(--pc-hover)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "var(--pc-bg-elevated)";
-                  }}
+                  kind="channel"
+                  id={name}
+                  className="flex items-center justify-between py-2.5 px-3 rounded-xl transition-all hover:opacity-90"
+                  style={{ background: 'var(--pc-bg-elevated)' }}
+                  title={`Open channels.${name} config`}
                 >
                   <span
-                    className="text-sm font-medium capitalize"
-                    style={{ color: "var(--pc-text-primary)" }}
+                    className="text-sm font-mono font-medium"
+                    style={{ color: 'var(--pc-text-primary)' }}
                   >
                     {name}
                   </span>
-                  <div className="flex items-center gap-2">
+                  <span className="flex items-center gap-2">
                     <span
                       className="status-dot"
                       style={
                         active
                           ? {
-                              background: "var(--color-status-success)",
-                              boxShadow: "0 0 6px var(--color-status-success)",
+                              background: 'var(--color-status-success)',
+                              boxShadow: '0 0 6px var(--color-status-success)',
                             }
-                          : { background: "var(--pc-text-faint)" }
+                          : { background: 'var(--pc-text-faint)' }
                       }
                     />
-                    <span className="text-xs" style={{ color: "var(--pc-text-muted)" }}>
-                      {active ? t("dashboard.active") : t("dashboard.inactive")}
+                    <span className="text-xs" style={{ color: 'var(--pc-text-muted)' }}>
+                      {active ? t('dashboard.active') : t('dashboard.inactive')}
                     </span>
-                  </div>
-                </div>
+                  </span>
+                </EntityLink>
               ));
             })()}
           </div>
@@ -435,56 +507,90 @@ function OverviewTab({
               {t("dashboard.component_health")}
             </h2>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            {!status.health?.components || Object.entries(status.health.components).length === 0 ? (
-              <p
-                className="text-sm col-span-2"
-                style={{ color: "var(--pc-text-faint)" }}
-              >
-                {t("dashboard.no_components")}
-              </p>
-            ) : (
-              Object.entries(status.health.components).map(([name, comp]) => (
-                <div
-                  key={name}
-                  className="rounded-2xl p-3 transition-all"
-                  style={{
-                    border: `1px solid ${healthBorder(comp.status)}`,
-                    background: healthBg(comp.status),
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.transform = "scale(1.02)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.transform = "scale(1)";
-                  }}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <span
-                      className="status-dot"
+          {(() => {
+            const components = status.health?.components ?? {};
+            // Drop `channel:<type>.<alias>` rows: per-channel health lives in
+            // the Channels tab where every channel already has its own card.
+            // Component Health is for process-level supervisors only
+            // (gateway, daemon, scheduler, ...).
+            const entries = Object.entries(components).filter(
+              ([name]) => !name.startsWith('channel:'),
+            );
+            if (entries.length === 0) {
+              return (
+                <p className="text-sm" style={{ color: "var(--pc-text-faint)" }}>
+                  {t("dashboard.no_components")}
+                </p>
+              );
+            }
+            const sorted = entries.slice().sort((a, b) => a[0].localeCompare(b[0]));
+            return (
+              <div className="space-y-2">
+                {sorted.map(([name, comp]) => {
+                  const display = name;
+                  const lastErr = comp.last_error ?? null;
+                  const lastOk = comp.last_ok ?? null;
+                  return (
+                    <div
+                      key={name}
+                      className="rounded-xl px-3 py-2"
                       style={{
                         border: `1px solid ${healthBorder(comp.status)}`,
                         background: healthBg(comp.status),
                       }}
                     >
-                      {name}
-                    </span>
-                  </div>
-                  <p className="text-xs capitalize" style={{ color: "var(--pc-text-muted)" }}>
-                    {comp.status}
-                  </p>
-                  {comp.restart_count > 0 && (
-                    <p
-                      className="text-xs mt-1"
-                      style={{ color: "var(--color-status-warning)" }}
-                    >
-                      {t("dashboard.restarts")}: {comp.restart_count}
-                    </p>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span
+                          className="status-dot flex-shrink-0"
+                          style={{
+                            background: healthColor(comp.status),
+                            boxShadow: `0 0 6px ${healthColor(comp.status)}`,
+                          }}
+                        />
+                        <span
+                          className="text-sm font-medium font-mono break-all"
+                          style={{ color: "var(--pc-text-primary)" }}
+                        >
+                          {display}
+                        </span>
+                        <span
+                          className="ml-auto text-[10px] uppercase font-medium px-1.5 py-0.5 rounded-full flex-shrink-0"
+                          style={{
+                            color: healthColor(comp.status),
+                            background: 'transparent',
+                            border: `1px solid ${healthBorder(comp.status)}`,
+                          }}
+                        >
+                          {comp.status}
+                        </span>
+                      </div>
+                      {lastErr ? (
+                        <p
+                          className="text-[11px] mt-1 font-mono break-words"
+                          style={{ color: 'var(--color-status-error)' }}
+                          title={lastErr}
+                        >
+                          ⚠ {lastErr.length > 120 ? lastErr.slice(0, 117) + '…' : lastErr}
+                        </p>
+                      ) : null}
+                      <div className="flex items-center gap-3 text-[11px] mt-0.5" style={{ color: "var(--pc-text-muted)" }}>
+                        {lastOk && (
+                          <span title={`last ok: ${lastOk}`}>
+                            ok {formatRelative(lastOk)}
+                          </span>
+                        )}
+                        {comp.restart_count > 0 && (
+                          <span style={{ color: "var(--color-status-warning)" }}>
+                            {t("dashboard.restarts")}: {comp.restart_count}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </div>
       </div>
     </>
@@ -669,7 +775,7 @@ function SessionsTab() {
         <div className="flex items-center gap-3">
           <div
             className="h-6 w-6 border-2 rounded-full animate-spin"
-            style={{ borderColor: "var(--pc-border)", borderTopColor: "var(--pc-accent)" }}
+            style={{ borderColor: 'var(--pc-border)', borderTopColor: 'var(--pc-accent)' }}
           />
           <span className="text-sm" style={{ color: 'var(--pc-text-muted)' }}>
             {t('dashboard.loading_sessions')}
@@ -683,7 +789,11 @@ function SessionsTab() {
     return (
       <div
         className="rounded-2xl border p-4"
-        style={{ background: 'var(--color-status-error-alpha-08)', borderColor: 'var(--color-status-error-alpha-20)', color: 'var(--color-status-error)' }}
+        style={{
+          background: 'var(--color-status-error-alpha-08)',
+          borderColor: 'var(--color-status-error-alpha-20)',
+          color: 'var(--color-status-error)',
+        }}
       >
         {t('dashboard.load_sessions_error')}: {error}
       </div>
@@ -691,78 +801,38 @@ function SessionsTab() {
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      {/* Session List */}
-      <div className="lg:col-span-2 card p-5 animate-slide-in-up">
-        <div className="flex items-center gap-2 mb-5">
-          <Users className="h-5 w-5" style={{ color: "var(--pc-accent)" }} />
-          <h2
-            className="text-sm font-semibold uppercase tracking-wider"
-            style={{ color: "var(--pc-text-primary)" }}
-          >
-            {t("dashboard.sessions_title")}
-          </h2>
-          <span
-            className="ml-auto text-xs font-mono px-2 py-0.5 rounded-full"
-            style={{ background: "rgba(var(--pc-accent-rgb), 0.1)", color: "var(--pc-accent)" }}
-          >
-            {sessions.length}
-          </span>
-        </div>
+    <div className="card p-5 animate-slide-in-up space-y-4">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Users className="h-5 w-5" style={{ color: 'var(--pc-accent)' }} />
+        <h2
+          className="text-sm font-semibold uppercase tracking-wider"
+          style={{ color: 'var(--pc-text-primary)' }}
+        >
+          {t('dashboard.sessions_title')}
+        </h2>
+        <span
+          className="text-xs font-mono px-2 py-0.5 rounded-full"
+          style={{ background: 'rgba(var(--pc-accent-rgb), 0.1)', color: 'var(--pc-accent)' }}
+        >
+          {visible.length}
+          {visible.length !== sessions.length ? ` / ${sessions.length}` : ''}
+        </span>
 
-        {sessions.length === 0 ? (
-          <p className="text-sm py-8 text-center" style={{ color: "var(--pc-text-faint)" }}>
-            {t("dashboard.no_sessions")}
-          </p>
-        ) : (
-          <div className="space-y-2 overflow-y-auto max-h-96">
-            {sessions.map((session) => (
-              <button
-                key={session.session_id}
-                onClick={() => setSelectedSession(session)}
-                className="w-full text-left flex items-center justify-between py-3 px-4 rounded-xl transition-all"
-                style={{
-                  background: selectedSession?.session_id === session.session_id
-                    ? "rgba(var(--pc-accent-rgb), 0.08)"
-                    : "var(--pc-bg-elevated)",
-                  border: selectedSession?.session_id === session.session_id
-                    ? "1px solid rgba(var(--pc-accent-rgb), 0.2)"
-                    : "1px solid transparent",
-                }}
-                onMouseEnter={(e) => {
-                  if (selectedSession?.session_id !== session.session_id) {
-                    e.currentTarget.style.background = "var(--pc-hover)";
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (selectedSession?.session_id !== session.session_id) {
-                    e.currentTarget.style.background = "var(--pc-bg-elevated)";
-                  }
-                }}
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span
-                      className="text-sm font-medium font-mono truncate"
-                      style={{ color: "var(--pc-text-primary)" }}
-                    >
-                      {session.session_id.slice(0, 8)}...
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3 text-xs" style={{ color: "var(--pc-text-muted)" }}>
-                    <span className="flex items-center gap-1">
-                      <MessageSquare className="h-3 w-3" />
-                      {session.message_count}
-                    </span>
-                    <span>{formatRelative(session.last_activity)}</span>
-                  </div>
-                </div>
-                <ChevronRight
-                  className="h-4 w-4 flex-shrink-0"
-                  style={{ color: "var(--pc-text-faint)" }}
-                />
-              </button>
-            ))}
+        <div className="ml-auto flex items-center gap-2 flex-wrap">
+          <div className="relative">
+            <Search
+              className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5"
+              style={{ color: 'var(--pc-text-faint)' }}
+            />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search…"
+              className="input-electric pl-7 pr-2 py-1 text-xs w-40"
+              title="Substring match on id, key, name, agent, channel"
+              aria-label="Search sessions"
+            />
           </div>
           <div className="relative">
             <ArrowUpDown
@@ -914,17 +984,23 @@ function SessionsTab() {
         </div>
       )}
 
-        {selectedSession ? (
-          <div className="space-y-4">
-            {[
-              { label: t("dashboard.session_id"), value: selectedSession.session_id },
-              { label: t("dashboard.session_started"), value: formatTime(selectedSession.created_at) },
-              { label: t("dashboard.session_last_activity"), value: formatRelative(selectedSession.last_activity) },
-              { label: t("dashboard.session_messages"), value: String(selectedSession.message_count) },
-            ].map(({ label, value }) => (
-              <div key={label}>
-                <p className="text-xs uppercase tracking-wider mb-1" style={{ color: "var(--pc-text-faint)" }}>
-                  {label}
+      {inspect && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.5)' }}
+          onClick={() => setInspect(null)}
+        >
+          <div
+            className="card p-5 w-full max-w-3xl max-h-[80vh] overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between mb-4 gap-3">
+              <div className="min-w-0">
+                <p
+                  className="text-xs uppercase tracking-wider mb-1"
+                  style={{ color: 'var(--pc-text-faint)' }}
+                >
+                  Session
                 </p>
                 <p
                   className="text-sm font-mono break-all"
@@ -1038,12 +1114,8 @@ function SessionsTab() {
               )}
             </div>
           </div>
-        ) : (
-          <p className="text-sm py-8 text-center" style={{ color: "var(--pc-text-faint)" }}>
-            {t("dashboard.session_history")}
-          </p>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1144,7 +1216,7 @@ function ChannelsTab() {
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3 min-w-0">
               <div
-                className="p-2 rounded-2xl"
+                className="p-2 rounded-2xl flex-shrink-0"
                 style={{ background: `rgba(var(--pc-accent-rgb), 0.08)`, color: "var(--pc-accent)" }}
               >
                 <Radio className="h-5 w-5" />
@@ -1156,10 +1228,24 @@ function ChannelsTab() {
                   className="text-sm font-semibold font-mono break-all hover:underline"
                   title={`Open channels.${channel.name} config`}
                 >
-                  {channel.name}
-                </h3>
-                <span className="text-xs" style={{ color: "var(--pc-text-muted)" }}>
-                  {channel.type}
+                  <span style={{ color: 'var(--pc-text-primary)' }}>{channel.name}</span>
+                </EntityLink>
+                <span className="text-xs block" style={{ color: 'var(--pc-text-muted)' }}>
+                  {channel.owning_agent ? (
+                    <>
+                      owned by{' '}
+                      <EntityLink
+                        kind="agent"
+                        id={channel.owning_agent}
+                        className="hover:underline font-mono"
+                        title={`Open agents.${channel.owning_agent} config`}
+                      >
+                        {channel.owning_agent}
+                      </EntityLink>
+                    </>
+                  ) : (
+                    'no owning agent'
+                  )}
                 </span>
               </div>
             </div>
@@ -1173,34 +1259,17 @@ function ChannelsTab() {
           </div>
 
           <div className="flex items-center gap-2 mb-3">
-            <span
-              className="text-[10px] uppercase font-medium px-2 py-0.5 rounded-full"
-              style={{
-                background: channel.status === 'active'
-                  ? 'rgba(0, 230, 138, 0.1)'
-                  : channel.status === 'error'
-                    ? 'rgba(255, 68, 102, 0.1)'
-                    : 'rgba(var(--pc-accent-rgb), 0.08)',
-                color: channel.status === 'active'
-                  ? '#34d399'
-                  : channel.status === 'error'
-                    ? '#f87171'
-                    : 'var(--pc-text-muted)',
-              }}
-            >
-              {channel.status}
-            </span>
-            <span
-              className="text-[10px] uppercase font-medium px-2 py-0.5 rounded-full"
-              style={{
-                background: channel.enabled
-                  ? 'rgba(0, 230, 138, 0.1)'
-                  : 'rgba(255, 68, 102, 0.1)',
-                color: channel.enabled ? '#34d399' : '#f87171',
-              }}
-            >
-              {channel.enabled ? t("dashboard.channel_enabled") : t("dashboard.channel_disabled")}
-            </span>
+            <EntityEnabledToggle
+              prefix={`channels.${channel.type}.${channel.alias}`}
+              enabled={channel.enabled}
+              onChange={(next) =>
+                setChannels((prev) =>
+                  prev.map((c) =>
+                    c.name === channel.name ? { ...c, enabled: next } : c,
+                  ),
+                )
+              }
+            />
           </div>
 
           {/* Stats. `message_count` / `last_message_at` come back as
@@ -1212,20 +1281,8 @@ function ChannelsTab() {
             style={{ borderColor: "var(--pc-border)" }}
           >
             <div className="flex justify-between text-xs">
-              <span style={{ color: "var(--pc-text-muted)" }}>{t("dashboard.channel_messages")}</span>
-              <span className="font-mono" style={{ color: "var(--pc-text-primary)" }}>
-                {channel.message_count.toLocaleString()}
-              </span>
-            </div>
-            <div className="flex justify-between text-xs">
-              <span style={{ color: "var(--pc-text-muted)" }}>{t("dashboard.channel_last_message")}</span>
-              <span className="font-mono" style={{ color: "var(--pc-text-primary)" }}>
-                {channel.last_message_at ? formatRelative(channel.last_message_at) : t("dashboard.never")}
-              </span>
-            </div>
-            <div className="flex justify-between text-xs">
               <span style={{ color: "var(--pc-text-muted)" }}>{t("dashboard.health")}</span>
-              <span className="capitalize" style={{ color: healthColor(channel.health) }}>
+              <span style={{ color: healthColor(channel.health) }}>
                 {channel.health}
               </span>
             </div>
@@ -1253,7 +1310,30 @@ export default function Dashboard() {
   const [costWindow, setCostWindow] = useState<CostWindow>('today');
   const [error, setError] = useState<string | null>(null);
   const [showAllChannels, setShowAllChannels] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabId>('overview');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = parseTab(searchParams.get('tab'));
+  const setActiveTab = (id: TabId) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (id === 'overview') next.delete('tab');
+        else next.set('tab', id);
+        // Filters belong to specific tabs; drop them when leaving so deep
+        // links don't drag a stale agent= into the wrong tab.
+        if (id !== 'sessions' && id !== 'memories') {
+          next.delete('agent');
+        }
+        if (id !== 'sessions') {
+          next.delete('channel');
+        }
+        if (id !== 'memories') {
+          next.delete('category');
+        }
+        return next;
+      },
+      { replace: true },
+    );
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1351,6 +1431,11 @@ export default function Dashboard() {
       )}
       {activeTab === 'sessions' && <SessionsTab />}
       {activeTab === 'channels' && <ChannelsTab />}
+      {activeTab === 'memories' && <MemoriesTab />}
+      {activeTab === 'health' && <HealthTab status={status} />}
+      {activeTab === 'cost' && (
+        <CostTab cost={cost} window={costWindow} onWindowChange={setCostWindow} />
+      )}
     </div>
   );
 }
