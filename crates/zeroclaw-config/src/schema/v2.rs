@@ -471,7 +471,9 @@ fn rename_subkey(table: &mut toml::Table, parent: &str, inner: &str, replacement
             ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(
                 ::serde_json::json!({"parent": parent, "inner": inner, "replacement": replacement})
             ),
-            "[]. renamed to []. (V3 qualified-noun rename)"
+            &format!(
+                "[{parent}].{inner} renamed to [{parent}].{replacement} (V3 qualified-noun rename)"
+            )
         );
     }
 }
@@ -1009,9 +1011,17 @@ fn drop_cost_prices_with_logs(prices: &toml::Table) {
             ),
             None => (None, None),
         };
-        ::zeroclaw_log::record!(INFO, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(::serde_json::json!({"model_id": model_id, "input": format!("{:?}", input), "output": format!("{:?}", output)})), "[cost.prices.] dropped (V3 puts pricing on each \
-             [model_providers.<type>.<alias>] block); last-known rates: \
-             input= output=");
+        ::zeroclaw_log::record!(
+            INFO,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(
+                ::serde_json::json!({"model_id": model_id, "input": format!("{:?}", input), "output": format!("{:?}", output)})
+            ),
+            &format!(
+                "[cost.prices.{model_id}] dropped (V3 puts pricing on each \
+                 [model_providers.<type>.<alias>] block); last-known rates: \
+                 input={input:?} output={output:?}"
+            )
+        );
     }
 }
 
@@ -1076,7 +1086,15 @@ fn synthesize_peer_group_from_allowlist(
         toml::Value::Array(external_peers),
     );
     peer_groups.insert(group_name, toml::Value::Table(group_entry));
-    ::zeroclaw_log::record!(INFO, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(::serde_json::json!({"channel_type": channel_type, "channel_alias": channel_alias, "field_name": field_name})), "channels... folded into [peer_groups._]");
+    ::zeroclaw_log::record!(
+        INFO,
+        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(
+            ::serde_json::json!({"channel_type": channel_type, "channel_alias": channel_alias, "field_name": field_name})
+        ),
+        &format!(
+            "channels.{channel_type}.{channel_alias}.{field_name} folded into [peer_groups.{channel_type}_{channel_alias}]"
+        )
+    );
 }
 
 /// Wrap V2 `Option<T>` channel sections into V3 `HashMap<String, T>` keyed
@@ -1952,7 +1970,9 @@ fn backfill_heartbeat_agent(passthrough: &mut toml::Table) {
             INFO,
             ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
                 .with_attrs(::serde_json::json!({"alias": format!("{:?}", alias)})),
-            "heartbeat.agent unset with heartbeat.enabled = true → backfilled to "
+            &format!(
+                "heartbeat.agent unset with heartbeat.enabled = true → backfilled to {alias:?}"
+            )
         );
     }
 }
@@ -2022,7 +2042,7 @@ fn lift_top_level_identity_into_agents(passthrough: &mut toml::Table) {
         INFO,
         ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
             .with_attrs(::serde_json::json!({"folded": folded})),
-        "[identity] lifted into [agents.<alias>.identity] ( agent(s))"
+        &format!("[identity] lifted into [agents.<alias>.identity] ({folded} agent(s))")
     );
 }
 
@@ -2210,7 +2230,9 @@ fn fold_v2_transcription_into_providers(
                 INFO,
                 ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
                     .with_attrs(::serde_json::json!({"legacy_default": legacy_default})),
-                "[transcription]. dropped (V3 has no global default-provider; set agent.<X>.transcription_provider instead)"
+                &format!(
+                    "[transcription].{legacy_default} dropped (V3 has no global default-provider; set agent.<X>.transcription_provider instead)"
+                )
             );
         }
     }

@@ -386,7 +386,7 @@ where
                         ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
                             .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
                             .with_attrs(::serde_json::json!({"name": name})),
-                        "Daemon component '' exited unexpectedly"
+                        &format!("Daemon component '{name}' exited unexpectedly")
                     );
                     // Clean exit — reset backoff since the component ran successfully
                     backoff = initial_backoff_secs.max(1);
@@ -400,7 +400,7 @@ where
                             .with_attrs(
                                 ::serde_json::json!({"error": e.to_string(), "name": name})
                             ),
-                        "Daemon component '' failed"
+                        &format!("Daemon component '{name}' failed: {e}")
                     );
                 }
             }
