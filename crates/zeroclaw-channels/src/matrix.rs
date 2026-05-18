@@ -3067,6 +3067,16 @@ impl Channel for MatrixChannel {
         "matrix"
     }
 
+    fn self_handle(&self) -> Option<String> {
+        self.client
+            .get()
+            .and_then(|c| c.user_id().map(|u| u.to_string()))
+    }
+
+    fn self_addressed_mention(&self) -> Option<String> {
+        self.self_handle()
+    }
+
     async fn send(&self, message: &SendMessage) -> Result<()> {
         let client = self.ensure_client().await?;
         let _ = outbound::send(&self.outbox(client), message).await?;

@@ -21,6 +21,10 @@ pub struct MattermostChannel {
     /// first use, either by copying `bot_token` or by performing the login
     /// flow with `login_id` and `password`.
     session_token: OnceCell<String>,
+    /// (user_id, username) for the bot, fetched once from `/users/me`
+    /// inside `get_bot_identity`. Read by `self_handle` /
+    /// `self_addressed_mention` so the identity block reaches the prompt.
+    bot_identity: OnceCell<(String, String)>,
     /// Channel IDs to listen on. Currently only the first is used at runtime;
     /// multi-channel listening lands separately.
     channel_ids: Vec<String>,
@@ -63,6 +67,7 @@ impl MattermostChannel {
             login_id,
             password,
             session_token: OnceCell::new(),
+            bot_identity: OnceCell::new(),
             channel_ids,
             alias: alias.into(),
             peer_resolver,
@@ -198,8 +203,12 @@ impl MattermostChannel {
     }
 
     /// Get the bot's own user ID and username so we can ignore our own messages
-    /// and detect @-mentions by username.
+    /// and detect @-mentions by username. Result cached on the channel
+    /// so `self_handle` / `self_addressed_mention` can read it sync.
     async fn get_bot_identity(&self) -> (String, String) {
+        if let Some(cached) = self.bot_identity.get() {
+            return cached.clone();
+        }
         let token = match self.token().await {
             Ok(t) => t.to_string(),
             Err(e) => {
@@ -238,6 +247,9 @@ impl MattermostChannel {
             .and_then(|u| u.as_str())
             .unwrap_or("")
             .to_string();
+        if !id.is_empty() || !username.is_empty() {
+            let _ = self.bot_identity.set((id.clone(), username.clone()));
+        }
         (id, username)
     }
 
@@ -387,6 +399,21 @@ impl ::zeroclaw_api::attribution::Attributable for MattermostChannel {
 impl Channel for MattermostChannel {
     fn name(&self) -> &str {
         "mattermost"
+    }
+
+    fn self_handle(&self) -> Option<String> {
+        self.bot_identity
+            .get()
+            .map(|(id, _)| id.clone())
+            .filter(|id| !id.is_empty())
+    }
+
+    fn self_addressed_mention(&self) -> Option<String> {
+        self.bot_identity
+            .get()
+            .map(|(_, username)| username.clone())
+            .filter(|u| !u.is_empty())
+            .map(|u| format!("@{u}"))
     }
 
     async fn send(&self, message: &SendMessage) -> Result<()> {
