@@ -564,9 +564,15 @@ impl<'a> Dashboard<'a> {
                 } else {
                     theme::body_style()
                 };
+                let transport_label = if t.transport.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", t.transport)
+                };
                 ListItem::new(Line::from(vec![
                     Span::styled("\u{25cf} ", Style::default().fg(Color::Green)),
                     Span::styled(&t.tui_id, id_style),
+                    Span::styled(transport_label, theme::dim_style()),
                     Span::styled(you_marker, theme::accent_style()),
                     Span::styled(format!("  {elapsed}"), theme::dim_style()),
                 ]))

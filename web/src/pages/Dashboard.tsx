@@ -725,6 +725,15 @@ function OverviewTab({
                   >
                     {tui.tui_id}
                   </span>
+                  <span
+                    className="text-xs font-mono px-1.5 py-0.5 rounded"
+                    style={{
+                      background: "rgba(var(--pc-accent-rgb), 0.08)",
+                      color: "var(--pc-text-muted)",
+                    }}
+                  >
+                    {tui.transport || "unknown"}
+                  </span>
                 </div>
                 <span
                   className="text-xs"

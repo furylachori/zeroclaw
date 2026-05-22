@@ -273,4 +273,5 @@ export interface TuiEntry {
   tui_id: string;
   connected_at: string;
   peer_label: string;
+  transport: string;
 }

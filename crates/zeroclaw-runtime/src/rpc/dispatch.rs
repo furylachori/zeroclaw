@@ -461,6 +461,11 @@ impl RpcDispatcher {
             .register(super::tui_identity::TuiEntry {
                 tui_id: tui_id.clone(),
                 connected_at: chrono::Utc::now(),
+                transport: self
+                    .peer_label
+                    .split_once(':')
+                    .map_or("unknown", |(proto, _)| proto)
+                    .to_string(),
                 peer_label: self.peer_label.clone(),
             });
         self.tui_id = Some(tui_id.clone());
@@ -518,6 +523,7 @@ impl RpcDispatcher {
                     connected_at: e.connected_at.to_rfc3339(),
                     connected_at_unix: e.connected_at.timestamp(),
                     peer_label: e.peer_label,
+                    transport: e.transport,
                 })
                 .collect(),
         })

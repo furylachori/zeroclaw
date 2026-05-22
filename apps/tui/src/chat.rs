@@ -238,13 +238,13 @@ use std::io::Stdout;
 use crossterm::{
     event::{Event, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     style::{Color, Modifier, Style},
     widgets::{Clear, Wrap},
-    Frame, Terminal,
 };
 
 use crate::client::{ApprovalDecision, SessionPromptResult};
@@ -255,7 +255,7 @@ pub async fn run(rpc: &mut RpcClient, agent_alias: &str) -> anyhow::Result<()> {
     let session = rpc
         .session_new(agent_alias, None)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to create session: {e}"))?;
+        .map_err(|e| anyhow::Error::msg(format!("failed to create session: {e}")))?;
 
     let mut term = init_terminal()?;
     let result = chat_loop(rpc, session.session_id.clone(), agent_alias, &mut term).await;
@@ -453,7 +453,12 @@ fn render_conversation(f: &mut Frame, state: &ChatState, area: Rect) {
                     Span::styled(text.as_str(), Style::default().fg(Color::DarkGray)),
                 ]));
             }
-            ChatEntry::Tool { name, input, result, .. } => {
+            ChatEntry::Tool {
+                name,
+                input,
+                result,
+                ..
+            } => {
                 let input_str = serde_json::to_string(input).unwrap_or_default();
                 let truncated: String = input_str.chars().take(60).collect();
                 lines.push(Line::from(vec![
@@ -502,8 +507,8 @@ fn render_input(f: &mut Frame, state: &ChatState, area: Rect) {
     } else {
         " > "
     };
-    let p = Paragraph::new(state.input())
-        .block(Block::default().borders(Borders::ALL).title(label));
+    let p =
+        Paragraph::new(state.input()).block(Block::default().borders(Borders::ALL).title(label));
     f.render_widget(p, area);
 }
 
@@ -610,7 +615,13 @@ mod tests {
         });
         let entries = s.entries();
         assert_eq!(entries.len(), 1);
-        assert!(matches!(&entries[0], ChatEntry::Tool { result: Some(_), .. }));
+        assert!(matches!(
+            &entries[0],
+            ChatEntry::Tool {
+                result: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -638,9 +649,10 @@ mod tests {
         });
         s.commit_turn("Done".to_string());
         assert_eq!(s.current_agent_text(), "");
-        assert!(s
-            .entries()
-            .iter()
-            .any(|e| matches!(e, ChatEntry::AgentMessage(t) if t == "Done")));
+        assert!(
+            s.entries()
+                .iter()
+                .any(|e| matches!(e, ChatEntry::AgentMessage(t) if t == "Done"))
+        );
     }
 }

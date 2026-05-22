@@ -23,6 +23,8 @@ pub struct TuiEntry {
     pub tui_id: String,
     pub connected_at: DateTime<Utc>,
     pub peer_label: String,
+    /// Transport protocol: `"unix"` or `"wss"`.
+    pub transport: String,
 }
 
 // ── Registry ─────────────────────────────────────────────────────
@@ -225,6 +227,7 @@ mod tests {
             tui_id: "tui_aabb0011".to_string(),
             connected_at: Utc::now(),
             peer_label: "test".to_string(),
+            transport: "unix".to_string(),
         });
         assert_eq!(registry.list().len(), 1);
         assert_eq!(registry.list()[0].tui_id, "tui_aabb0011");
@@ -247,6 +250,7 @@ mod tests {
             tui_id: "tui_00000000".to_string(),
             connected_at: Utc::now(),
             peer_label: "test".to_string(),
+            transport: "unix".to_string(),
         });
         // generate_unique should return something different
         let id = registry.generate_unique_tui_id();

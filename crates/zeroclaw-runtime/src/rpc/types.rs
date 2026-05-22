@@ -106,6 +106,8 @@ rpc_type! {
         /// without requiring chrono).
         pub connected_at_unix: i64,
         pub peer_label: String,
+        /// Transport protocol: `"unix"` or `"wss"`.
+        pub transport: String,
     }
 }
 

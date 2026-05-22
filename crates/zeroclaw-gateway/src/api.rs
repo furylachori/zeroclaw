@@ -1192,6 +1192,7 @@ pub async fn handle_api_tuis(
                         "tui_id": e.tui_id,
                         "connected_at": e.connected_at.to_rfc3339(),
                         "peer_label": e.peer_label,
+                        "transport": e.transport,
                     })
                 })
                 .collect()
