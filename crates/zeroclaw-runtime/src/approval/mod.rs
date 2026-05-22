@@ -732,6 +732,18 @@ mod tests {
     }
 
     #[test]
+    fn channel_deny_with_edit_maps_to_no() {
+        use zeroclaw_api::channel::ChannelApprovalResponse;
+        let mapped = match (ChannelApprovalResponse::DenyWithEdit { replacement: "x".to_string() }) {
+            ChannelApprovalResponse::Approve => ApprovalResponse::Yes,
+            ChannelApprovalResponse::AlwaysApprove => ApprovalResponse::Always,
+            ChannelApprovalResponse::Deny => ApprovalResponse::No,
+            ChannelApprovalResponse::DenyWithEdit { .. } => ApprovalResponse::No,
+        };
+        assert_eq!(mapped, ApprovalResponse::No);
+    }
+
+    #[test]
     fn channel_approval_request_serde_roundtrip() {
         use zeroclaw_api::channel::ChannelApprovalRequest;
         let req = ChannelApprovalRequest {

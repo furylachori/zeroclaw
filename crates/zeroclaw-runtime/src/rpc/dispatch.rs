@@ -799,7 +799,7 @@ impl RpcDispatcher {
             "allow_always" => zeroclaw_api::channel::ChannelApprovalResponse::AlwaysApprove,
             "reject" | "reject_once" => zeroclaw_api::channel::ChannelApprovalResponse::Deny,
             "reject_with_edit" => {
-                // TODO(#6820): use DenyWithEdit when the variant is added in Task 10
+                // Task 11 wires the replacement payload through — using Deny as conservative fallback
                 zeroclaw_api::channel::ChannelApprovalResponse::Deny
             }
             other => {
