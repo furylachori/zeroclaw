@@ -806,4 +806,67 @@ mod tests {
         );
         task.await.unwrap().unwrap();
     }
+
+    #[tokio::test]
+    async fn reject_with_edit_missing_replacement_defaults_to_empty() {
+        let (rpc, mut rx) = make_rpc();
+        let rpc_for_resp = Arc::clone(&rpc);
+        let ch = AcpChannel::new("acp", "sess-1", Arc::clone(&rpc), Duration::from_secs(30));
+        let request = ChannelApprovalRequest {
+            tool_name: "file_edit".to_string(),
+            arguments_summary: "edit foo.rs".to_string(),
+            raw_arguments: None,
+        };
+
+        let task = tokio::spawn(async move { ch.request_approval("", &request).await });
+
+        let line = rx.recv().await.unwrap();
+        let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let id = req["id"].as_str().unwrap().to_string();
+
+        // Response has optionId but no replacementContent.
+        rpc_for_resp.dispatch_response(
+            &id,
+            Some(serde_json::json!({
+                "outcome": {
+                    "outcome": "selected",
+                    "optionId": "reject-with-edit"
+                }
+            })),
+            None,
+        );
+
+        let result = task.await.unwrap().unwrap();
+        // Absent replacementContent defaults to empty string — caller must guard.
+        assert!(matches!(result, Some(ChannelApprovalResponse::DenyWithEdit { replacement }) if replacement.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn file_write_approval_includes_reject_with_edit_option() {
+        let (rpc, mut rx) = make_rpc();
+        let rpc_for_resp = Arc::clone(&rpc);
+        let ch = AcpChannel::new("acp", "sess-1", Arc::clone(&rpc), Duration::from_secs(30));
+        let request = ChannelApprovalRequest {
+            tool_name: "file_write".to_string(),
+            arguments_summary: "write bar.rs".to_string(),
+            raw_arguments: None,
+        };
+
+        let task = tokio::spawn(async move { ch.request_approval("", &request).await });
+
+        let line = rx.recv().await.unwrap();
+        let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+
+        let options = req["params"]["options"].as_array().unwrap();
+        let has_reject_edit = options.iter().any(|o| o["optionId"] == "reject-with-edit");
+        assert!(has_reject_edit, "file_write approval must offer reject-with-edit");
+
+        let id = req["id"].as_str().unwrap().to_string();
+        rpc_for_resp.dispatch_response(
+            &id,
+            Some(serde_json::json!({"outcome": {"outcome": "cancelled"}})),
+            None,
+        );
+        task.await.unwrap().unwrap();
+    }
 }
