@@ -154,11 +154,12 @@ pub fn spawn_notification_router(
         loop {
             match bcast_rx.recv().await {
                 Ok(notif) => {
-                    if notif.method == "session/update" {
-                        if let Some(update) = parse_session_update(&notif.params) {
-                            if update_tx.send(update).await.is_err() {
-                                break;
-                            }
+                    if notif.method != "session/update" {
+                        continue;
+                    }
+                    if let Some(update) = parse_session_update(&notif.params) {
+                        if update_tx.send(update).await.is_err() {
+                            break;
                         }
                     }
                 }
@@ -694,7 +695,7 @@ mod notification_tests {
             "timeout_secs": 60
         });
         let update = parse_session_update(&params).unwrap();
-        matches!(update, SessionUpdate::ApprovalRequest { .. });
+        assert!(matches!(update, SessionUpdate::ApprovalRequest { .. }));
     }
 
     #[tokio::test]
@@ -722,7 +723,7 @@ mod notification_tests {
         .expect("timed out")
         .expect("channel closed");
 
-        matches!(update, SessionUpdate::AgentMessageChunk { .. });
+        assert!(matches!(update, SessionUpdate::AgentMessageChunk { .. }));
     }
 
     #[tokio::test]
