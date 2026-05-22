@@ -799,8 +799,8 @@ impl RpcDispatcher {
             "allow_always" => zeroclaw_api::channel::ChannelApprovalResponse::AlwaysApprove,
             "reject" | "reject_once" => zeroclaw_api::channel::ChannelApprovalResponse::Deny,
             "reject_with_edit" => {
-                // Task 11 wires the replacement payload through — using Deny as conservative fallback
-                zeroclaw_api::channel::ChannelApprovalResponse::Deny
+                let replacement = p.replacement.unwrap_or_default();
+                zeroclaw_api::channel::ChannelApprovalResponse::DenyWithEdit { replacement }
             }
             other => {
                 return Err(rpc_err(

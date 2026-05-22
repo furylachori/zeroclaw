@@ -326,7 +326,8 @@ impl Channel for AcpChannel {
         _recipient: &str,
         request: &ChannelApprovalRequest,
     ) -> anyhow::Result<Option<ChannelApprovalResponse>> {
-        let options = [
+        let is_edit_tool = matches!(request.tool_name.as_str(), "file_edit" | "file_write");
+        let mut options = vec![
             json!({
                 "optionId": "allow-once",
                 "name": "Allow once",
@@ -337,12 +338,19 @@ impl Channel for AcpChannel {
                 "name": "Always allow",
                 "kind": "allow_always",
             }),
-            json!({
-                "optionId": "reject-once",
-                "name": "Reject",
-                "kind": "reject_once",
-            }),
         ];
+        if is_edit_tool {
+            options.push(json!({
+                "optionId": "reject-with-edit",
+                "name": "Reject with edit",
+                "kind": "reject_with_edit",
+            }));
+        }
+        options.push(json!({
+            "optionId": "reject-once",
+            "name": "Reject",
+            "kind": "reject_once",
+        }));
 
         let tool_call_id = format!("approval-{}", uuid::Uuid::new_v4());
         let title = format!("Approve {}?", request.tool_name);
@@ -393,6 +401,14 @@ impl Channel for AcpChannel {
                     "allow-once" => Ok(Some(ChannelApprovalResponse::Approve)),
                     "allow-always" => Ok(Some(ChannelApprovalResponse::AlwaysApprove)),
                     "reject-once" | "reject-always" => Ok(Some(ChannelApprovalResponse::Deny)),
+                    "reject-with-edit" => {
+                        let replacement = outcome
+                            .and_then(|o| o.get("replacementContent"))
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        Ok(Some(ChannelApprovalResponse::DenyWithEdit { replacement }))
+                    }
                     other => anyhow::bail!("ACP returned unknown permission optionId: {other}"),
                 }
             }
@@ -714,5 +730,80 @@ mod tests {
         assert_eq!(arr[0]["type"], "content");
         assert_eq!(arr[0]["content"]["type"], "text");
         assert_eq!(arr[0]["content"]["text"], "ls -la");
+    }
+
+    #[tokio::test]
+    async fn request_approval_maps_reject_with_edit_to_deny_with_edit() {
+        let (rpc, mut rx) = make_rpc();
+        let rpc_for_resp = Arc::clone(&rpc);
+        let ch = AcpChannel::new("acp", "sess-1", Arc::clone(&rpc), Duration::from_secs(30));
+        let request = ChannelApprovalRequest {
+            tool_name: "file_edit".to_string(),
+            arguments_summary: "edit foo.rs".to_string(),
+            raw_arguments: Some(serde_json::json!({
+                "path": "foo.rs",
+                "old_string": "let x = 1;",
+                "new_string": "let x = 2;"
+            })),
+        };
+
+        let task = tokio::spawn(async move { ch.request_approval("", &request).await });
+
+        let line = rx.recv().await.unwrap();
+        let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let id = req["id"].as_str().unwrap().to_string();
+
+        rpc_for_resp.dispatch_response(
+            &id,
+            Some(serde_json::json!({
+                "outcome": {
+                    "outcome": "selected",
+                    "optionId": "reject-with-edit",
+                    "replacementContent": "let x = 99;"
+                }
+            })),
+            None,
+        );
+
+        let result = task.await.unwrap().unwrap();
+        match result {
+            Some(ChannelApprovalResponse::DenyWithEdit { replacement }) => {
+                assert_eq!(replacement, "let x = 99;");
+            }
+            other => panic!("expected DenyWithEdit, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn file_edit_approval_includes_reject_with_edit_option() {
+        let (rpc, mut rx) = make_rpc();
+        let rpc_for_resp = Arc::clone(&rpc);
+        let ch = AcpChannel::new("acp", "sess-1", Arc::clone(&rpc), Duration::from_secs(30));
+        let request = ChannelApprovalRequest {
+            tool_name: "file_edit".to_string(),
+            arguments_summary: "edit foo.rs".to_string(),
+            raw_arguments: Some(serde_json::json!({
+                "path": "foo.rs",
+                "old_string": "a",
+                "new_string": "b"
+            })),
+        };
+
+        let task = tokio::spawn(async move { ch.request_approval("", &request).await });
+
+        let line = rx.recv().await.unwrap();
+        let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+
+        let options = req["params"]["options"].as_array().unwrap();
+        let has_reject_edit = options.iter().any(|o| o["optionId"] == "reject-with-edit");
+        assert!(has_reject_edit, "file_edit approval must offer reject-with-edit");
+
+        let id = req["id"].as_str().unwrap().to_string();
+        rpc_for_resp.dispatch_response(
+            &id,
+            Some(serde_json::json!({"outcome": {"outcome": "cancelled"}})),
+            None,
+        );
+        task.await.unwrap().unwrap();
     }
 }
