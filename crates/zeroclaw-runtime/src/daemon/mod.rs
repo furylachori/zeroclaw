@@ -137,6 +137,9 @@ pub struct DaemonSubsystems {
                 + Sync,
         >,
     >,
+    /// Shared audit logger instance (created by the binary, used by daemon components).
+    #[cfg(feature = "agent-runtime")]
+    pub audit_logger: Option<std::sync::Arc<zeroclaw_runtime::security::audit::AuditLogger>>,
 }
 
 pub async fn run(
@@ -152,6 +155,29 @@ pub async fn run(
         .max(initial_backoff);
 
     crate::health::mark_component_ok("daemon");
+
+    #[cfg(feature = "agent-runtime")]
+    if let Some(ref audit_logger) = subsystems.audit_logger {
+        if let Err(e) = audit_logger.log(&zeroclaw_runtime::security::audit::AuditEvent::new(
+            zeroclaw_runtime::security::audit::AuditEventType::SecurityEvent,
+        )
+        .with_actor("system".to_string(), None, None)
+        .with_action(
+            "daemon_start".to_string(),
+            "system".to_string(),
+            false,
+            true,
+        )
+        .with_result(true, None, None, None)
+        .with_security(None)) {
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure),
+                "Failed to write audit log: {e}"
+            );
+        }
+    }
 
     // Shared broadcast channel so all daemon components (gateway, cron,
     // heartbeat) can publish real-time events to dashboard clients.

@@ -1937,12 +1937,64 @@ async fn main() -> Result<()> {
             // the same across reloads — only the in-process subsystems
             // tear down + re-instantiate.
             let mut current_config = config;
+            // Declared outside the loop so it gets moved into DaemonSubsystems
+            // on first iteration; re-initialized inside the loop on each reload.
+            #[cfg(feature = "agent-runtime")]
+            let mut audit_logger: Option<
+                std::sync::Arc<zeroclaw_runtime::security::audit::AuditLogger>,
+            > = None;
             loop {
                 // Per-iteration clones so the subsystem closures (which
                 // `move`-capture) don't consume the outer bindings on the
                 // first iteration; reload would otherwise see a moved value.
                 let canvas_store_for_gateway = canvas_store_for_gateway.clone();
                 let canvas_store_for_channels = canvas_store_for_channels.clone();
+
+                // Initialize audit logger if enabled in config
+                #[cfg(feature = "agent-runtime")]
+                {
+                    use zeroclaw_runtime::security::audit::AuditLogger;
+                    if current_config.security.audit.enabled {
+                        let zeroclaw_dir = current_config
+                            .config_path
+                            .parent()
+                            .map(std::path::Path::to_path_buf)
+                            .unwrap_or_else(|| std::path::PathBuf::from("."));
+                        audit_logger = match AuditLogger::new(
+                            current_config.security.audit.clone(),
+                            zeroclaw_dir,
+                        ) {
+                            Ok(logger) => {
+                                ::zeroclaw_log::record!(
+                                    INFO,
+                                    ::zeroclaw_log::Event::new(
+                                        module_path!(),
+                                        ::zeroclaw_log::Action::Note
+                                    )
+                                    .with_outcome(::zeroclaw_log::EventOutcome::Success),
+                                    "Audit logger initialized: {}",
+                                    current_config.security.audit.log_path
+                                );
+                                Some(std::sync::Arc::new(logger))
+                            }
+                            Err(e) => {
+                                ::zeroclaw_log::record!(
+                                    WARN,
+                                    ::zeroclaw_log::Event::new(
+                                        module_path!(),
+                                        ::zeroclaw_log::Action::Fail
+                                    )
+                                    .with_outcome(::zeroclaw_log::EventOutcome::Failure),
+                                    "Failed to initialize audit logger: {e}"
+                                );
+                                None
+                            }
+                        };
+                    } else {
+                        audit_logger = None;
+                    }
+                }
+
                 let subsystems = daemon::DaemonSubsystems {
                     #[cfg(feature = "gateway")]
                     gateway_start: Some(Box::new(move |host, port, config, tx, reload_tx| {
@@ -2000,6 +2052,10 @@ async fn main() -> Result<()> {
                             })
                         }
                     })),
+                    #[cfg(feature = "agent-runtime")]
+                    audit_logger,
+                    #[cfg(not(feature = "agent-runtime"))]
+                    audit_logger: None,
                 };
                 let exit = Box::pin(daemon::run(
                     current_config.clone(),

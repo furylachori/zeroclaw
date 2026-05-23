@@ -285,6 +285,28 @@ impl AuditLogger {
         };
 
         let log_path = zeroclaw_dir.join(&config.log_path);
+
+        // Resolve to absolute path and verify it stays within zeroclaw_dir
+        let canonical_zeroclaw = std::fs::canonicalize(&zeroclaw_dir)
+            .map_err(|e| anyhow::Error::msg(format!("invalid zeroclaw dir: {e}")))?;
+        let canonical_log_path = std::fs::canonicalize(&log_path)
+            .unwrap_or_else(|_| {
+                // If the target doesn't exist yet, canonicalize the parent
+                log_path.parent()
+                    .and_then(|p| std::fs::canonicalize(p).ok())
+                    .map(|p| p.join(log_path.file_name().unwrap_or_default()))
+                    .unwrap_or(log_path.clone())
+            });
+
+        // Check the log path is within zeroclaw_dir
+        if !canonical_log_path.starts_with(&canonical_zeroclaw) {
+            bail!(
+                "audit log path {} is outside zeroclaw directory {}",
+                canonical_log_path.display(),
+                canonical_zeroclaw.display()
+            );
+        }
+
         let chain_state = recover_chain_state(&log_path);
         Ok(Self {
             log_path,
@@ -340,6 +362,14 @@ impl AuditLogger {
 
             state.prev_hash = chained.entry_hash.clone();
             state.sequence += 1;
+        }
+
+        // Verify the file is not a symlink (prevent symlink attacks) — BEFORE opening
+        if self.log_path.symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            bail!("audit log path is a symlink — refusing to write for security");
         }
 
         // Serialize and write
@@ -409,7 +439,14 @@ impl AuditLogger {
         for i in (1..10).rev() {
             let old_name = format!("{}.{}.log", self.log_path.display().to_string(), i);
             let new_name = format!("{}.{}.log", self.log_path.display().to_string(), i + 1);
-            let _ = std::fs::rename(&old_name, &new_name);
+            if let Err(e) = std::fs::rename(&old_name, &new_name) {
+                // ENOENT is expected for files that don't exist yet (e.g., .9.log → .10.log)
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    return Err(anyhow::Error::msg(format!(
+                        "rotation rename failed: {old_name} -> {new_name}: {e}"
+                    )));
+                }
+            }
         }
 
         let rotated = format!("{}.1.log", self.log_path.display().to_string());
@@ -418,25 +455,28 @@ impl AuditLogger {
     }
 }
 
-/// Recover chain state from an existing log file.
+/// Recover chain state from an existing log file (including rotated files).
 ///
-/// Returns the genesis state if the file does not exist or is empty.
+/// Returns the genesis state if no valid entry is found in any file.
 fn recover_chain_state(log_path: &Path) -> ChainState {
-    let file = match std::fs::File::open(log_path) {
-        Ok(f) => f,
-        Err(_) => {
-            return ChainState {
-                prev_hash: GENESIS_PREV_HASH.to_string(),
-                sequence: 0,
-            };
-        }
-    };
-
-    let reader = BufReader::new(file);
+    // Read the primary log file first
     let mut last_entry: Option<AuditEvent> = None;
-    for l in reader.lines().map_while(Result::ok) {
-        if let Ok(entry) = serde_json::from_str::<AuditEvent>(&l) {
-            last_entry = Some(entry);
+
+    // Try primary file
+    if let Some(entry) = read_last_valid_entry(log_path) {
+        last_entry = Some(entry);
+    }
+
+    // If primary file is empty or doesn't exist, check rotated files
+    // in order (most recent first)
+    if last_entry.is_none() {
+        for i in 1..=10 {
+            let rotated = format!("{}.{}.log", log_path.display().to_string(), i);
+            let rotated_path = PathBuf::from(&rotated);
+            if let Some(entry) = read_last_valid_entry(&rotated_path) {
+                last_entry = Some(entry);
+                break;
+            }
         }
     }
 
@@ -450,6 +490,29 @@ fn recover_chain_state(log_path: &Path) -> ChainState {
             sequence: 0,
         },
     }
+}
+
+/// Helper: read the last well-formed entry from a log file, or None if empty/invalid.
+fn read_last_valid_entry(log_path: &Path) -> Option<AuditEvent> {
+    let file = std::fs::File::open(log_path).ok()?;
+    let reader = BufReader::new(file);
+
+    // Limit to prevent /dev/zero hang — read at most 10_000_000 lines (~1GB of JSON)
+    let mut last_entry: Option<AuditEvent> = None;
+    for (idx, line_result) in reader.lines().enumerate() {
+        if idx >= 10_000_000 {
+            break; // Safety cap to prevent infinite reads
+        }
+        let line = line_result.ok()?;
+        if let Ok(entry) = serde_json::from_str::<AuditEvent>(&line) {
+            // Verify the entry hash is consistent
+            let recomputed = compute_entry_hash(&entry.prev_hash, &entry);
+            if entry.entry_hash == recomputed {
+                last_entry = Some(entry);
+            }
+        }
+    }
+    last_entry
 }
 
 /// Verify the integrity of an audit log's Merkle hash chain.
