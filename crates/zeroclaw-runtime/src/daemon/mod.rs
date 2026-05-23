@@ -137,6 +137,8 @@ pub struct DaemonSubsystems {
                 + Sync,
         >,
     >,
+    /// Shared audit logger instance (created by the binary, used by daemon components).
+    pub audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 }
 
 pub async fn run(
@@ -152,6 +154,28 @@ pub async fn run(
         .max(initial_backoff);
 
     crate::health::mark_component_ok("daemon");
+
+    if let Some(ref audit_logger) = subsystems.audit_logger {
+        if let Err(e) = audit_logger.log(&crate::security::audit::AuditEvent::new(
+            crate::security::audit::AuditEventType::SecurityEvent,
+        )
+        .with_actor("system".to_string(), None, None)
+        .with_action(
+            "daemon_start".to_string(),
+            "system".to_string(),
+            false,
+            true,
+        )
+        .with_result(true, None, 0, None)
+        .with_security(None)) {
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure),
+                "Failed to write audit log: {e}"
+            );
+        }
+    }
 
     // Shared broadcast channel so all daemon components (gateway, cron,
     // heartbeat) can publish real-time events to dashboard clients.
@@ -282,7 +306,7 @@ pub async fn run(
             move || {
                 let cfg = scheduler_cfg.clone();
                 let tx = scheduler_event_tx.clone();
-                async move { Box::pin(crate::cron::scheduler::run(cfg, Some(tx))).await }
+                async move { Box::pin(crate::cron::scheduler::run(cfg, Some(tx), None)).await }
             },
         ));
     } else {
@@ -562,6 +586,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                 None,
                 None,
                 crate::agent::loop_::AgentRunOverrides::default(),
+                None,
             ));
             let phase1_result = if config.heartbeat.task_timeout_secs > 0 {
                 match tokio::time::timeout(
@@ -710,6 +735,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                 None,
                 None,
                 crate::agent::loop_::AgentRunOverrides::default(),
+                None,
             ));
             let phase2_result = if config.heartbeat.task_timeout_secs > 0 {
                 match tokio::time::timeout(
