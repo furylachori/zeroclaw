@@ -51,13 +51,19 @@ use zeroclaw_config::schema::Config;
 pub struct SendMessageToPeerTool {
     config: Arc<Config>,
     sender_alias: String,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 }
 
 impl SendMessageToPeerTool {
-    pub fn new(config: Arc<Config>, sender_alias: impl Into<String>) -> Self {
+    pub fn new(
+        config: Arc<Config>,
+        sender_alias: impl Into<String>,
+        audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
+    ) -> Self {
         Self {
             config,
             sender_alias: sender_alias.into(),
+            audit_logger,
         }
     }
 }
@@ -225,9 +231,16 @@ impl Tool for SendMessageToPeerTool {
             let sender = self.sender_alias.clone();
             let recipient_alias = canonical.clone();
             let body = message.clone();
+            let audit_logger = self.audit_logger.clone();
             tokio::spawn(async move {
-                if let Err(e) =
-                    crate::agent::loop_::process_message(cfg, &recipient_alias, &body, None).await
+                if let Err(e) = crate::agent::loop_::process_message(
+                    cfg,
+                    &recipient_alias,
+                    &body,
+                    None,
+                    audit_logger,
+                )
+                .await
                 {
                     ::zeroclaw_log::record!(WARN, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_outcome(::zeroclaw_log::EventOutcome::Unknown).with_attrs(::serde_json::json!({"sender": sender, "recipient": recipient_alias, "error": format!("{}", e)})), "peer-message in-process delivery failed");
                 }

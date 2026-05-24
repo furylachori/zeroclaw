@@ -402,6 +402,9 @@ struct ChannelRuntimeContext {
     /// `Tool receipts:` block sent after the main reply.
     show_receipts_in_response: bool,
     last_applied_config_stamp: Arc<Mutex<Option<ConfigFileStamp>>>,
+    /// Audit logger for tool-call and agent-action auditing.
+    /// None when audit is disabled or the logger failed to initialise.
+    audit_logger: Option<std::sync::Arc<zeroclaw_runtime::security::audit::AuditLogger>>,
 }
 
 #[derive(Clone)]
@@ -3837,9 +3840,10 @@ async fn process_channel_message_body(
                         // Collector is meaningful only when the generator is
                         // active. Pass None when receipts are disabled so the
                         // call site reflects that coupling explicitly.
-                        ctx.receipt_generator
-                            .as_ref()
-                            .map(|_| tool_receipts_collector.as_ref()),
+                          ctx.receipt_generator
+                              .as_ref()
+                              .map(|_| tool_receipts_collector.as_ref()),
+                          ctx.audit_logger.clone(),
                     ),
                     ),
                     ),
@@ -6548,6 +6552,7 @@ pub async fn start_channels(
     config: Config,
     canvas_store: Option<zeroclaw_runtime::tools::CanvasStore>,
     cancel: tokio_util::sync::CancellationToken,
+    audit_logger: Option<std::sync::Arc<zeroclaw_runtime::security::audit::AuditLogger>>,
 ) -> Result<()> {
     // Wrap into the canonical shared handle so channels and persistence
     // paths share one source of truth. The local `config` shadowing
@@ -6707,7 +6712,7 @@ pub async fn start_channels(
             );
         }
 
-        let security = Arc::new(SecurityPolicy::for_agent(&config, agent_alias)?);
+        let security = Arc::new(SecurityPolicy::for_agent(&config, agent_alias, None)?);
         let model = agent_provider_entry
             .and_then(|e| e.model.clone())
             .or_else(|| {
@@ -6785,6 +6790,7 @@ pub async fn start_channels(
             &config,
             canvas_store.clone(),
             false,
+            audit_logger.clone(),
         );
 
         // Wire MCP tools into the per-agent registry before freezing —
@@ -7322,6 +7328,7 @@ pub async fn start_channels(
             },
             show_receipts_in_response: agent.tool_receipts.show_in_response,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: audit_logger.clone(),
         });
 
         agent_ctxs.insert(agent_alias.clone(), runtime_ctx);
@@ -7957,6 +7964,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         })
     }
 
@@ -8512,6 +8520,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         };
 
         assert!(compact_sender_history(&ctx, &sender));
@@ -8644,6 +8653,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         };
 
         append_sender_turn(&ctx, &sender, ChatMessage::user("hello"));
@@ -8733,6 +8743,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
@@ -8840,6 +8851,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         };
 
         assert!(rollback_orphan_user_turn(
@@ -9638,6 +9650,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -9743,6 +9756,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
             agent_cfg: Arc::new(zeroclaw_config::schema::AliasedAgentConfig::default()),
             agent_transcription_provider: String::new(),
         });
@@ -9860,6 +9874,7 @@ BTC is currently around $65,000 based on latest tool output."#
             ),
             show_receipts_in_response: true,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
             agent_cfg: Arc::new(zeroclaw_config::schema::AliasedAgentConfig::default()),
             agent_transcription_provider: String::new(),
         });
@@ -10000,6 +10015,7 @@ BTC is currently around $65,000 based on latest tool output."#
             ),
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
             agent_cfg: Arc::new(zeroclaw_config::schema::AliasedAgentConfig::default()),
             agent_transcription_provider: String::new(),
         });
@@ -10109,6 +10125,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
             agent_cfg: Arc::new(zeroclaw_config::schema::AliasedAgentConfig::default()),
             agent_transcription_provider: String::new(),
         });
@@ -10236,6 +10253,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -10349,6 +10367,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -10447,6 +10466,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -10558,6 +10578,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -10695,6 +10716,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -10813,6 +10835,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -10922,6 +10945,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -11025,6 +11049,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -11331,6 +11356,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(4);
@@ -11453,6 +11479,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
@@ -11594,6 +11621,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
@@ -11732,6 +11760,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
@@ -11848,6 +11877,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -11946,6 +11976,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -12975,6 +13006,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -13130,6 +13162,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -13326,6 +13359,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -13451,6 +13485,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -14153,6 +14188,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         // Simulate a photo attachment message with [IMAGE:] marker.
@@ -14258,6 +14294,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -14395,6 +14432,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
             media_pipeline: zeroclaw_config::schema::MediaPipelineConfig::default(),
             transcription_config: zeroclaw_config::schema::TranscriptionConfig::default(),
             agent_transcription_provider: String::new(),
@@ -14586,6 +14624,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -14726,6 +14765,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -14858,6 +14898,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -15010,6 +15051,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -15360,6 +15402,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);

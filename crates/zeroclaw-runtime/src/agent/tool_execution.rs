@@ -45,6 +45,7 @@ pub async fn execute_one_tool(
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     receipt_generator: Option<&super::tool_receipts::ReceiptGenerator>,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 ) -> Result<ToolExecutionOutcome> {
     let args_summary = truncate_with_ellipsis(&call_arguments.to_string(), 300);
     observer.record_event(&ObserverEvent::ToolCallStart {
@@ -140,22 +141,46 @@ pub async fn execute_one_tool(
                 let receipt = receipt_generator.map(|receipt_gen| {
                     receipt_gen.generate_now(call_name, &call_arguments, &output)
                 });
-                Ok(ToolExecutionOutcome {
+                let outcome = ToolExecutionOutcome {
                     output,
                     success: true,
                     error_reason: None,
                     duration,
                     receipt,
-                })
+                };
+                if let Some(ref logger) = audit_logger {
+                    let _ = logger.log_command(
+                        call_name,
+                        &call_arguments.to_string(),
+                        "unknown",
+                        true,
+                        true,
+                        true,
+                        duration.as_millis() as u64,
+                    );
+                }
+                Ok(outcome)
             } else {
                 let reason = r.error.unwrap_or(r.output);
-                Ok(ToolExecutionOutcome {
+                let outcome = ToolExecutionOutcome {
                     output: format!("Error: {reason}"),
                     success: false,
                     error_reason: Some(scrub_credentials(&reason)),
                     duration,
                     receipt: None,
-                })
+                };
+                if let Some(ref logger) = audit_logger {
+                    let _ = logger.log_command(
+                        call_name,
+                        &call_arguments.to_string(),
+                        "unknown",
+                        true,
+                        true,
+                        false,
+                        duration.as_millis() as u64,
+                    );
+                }
+                Ok(outcome)
             }
         }
         Err(e) => {
@@ -175,13 +200,25 @@ pub async fn execute_one_tool(
                 success: false,
             });
             let reason = format!("Error executing {call_name}: {e}");
-            Ok(ToolExecutionOutcome {
+            let outcome = ToolExecutionOutcome {
                 output: reason.clone(),
                 success: false,
                 error_reason: Some(scrub_credentials(&reason)),
                 duration,
                 receipt: None,
-            })
+            };
+            if let Some(ref logger) = audit_logger {
+                let _ = logger.log_command(
+                    call_name,
+                    &call_arguments.to_string(),
+                    "unknown",
+                    true,
+                    true,
+                    false,
+                    duration.as_millis() as u64,
+                );
+            }
+            Ok(outcome)
         }
     }
 }
@@ -224,6 +261,7 @@ pub async fn execute_tools_parallel(
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     receipt_generator: Option<&super::tool_receipts::ReceiptGenerator>,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 ) -> Result<Vec<ToolExecutionOutcome>> {
     let futures: Vec<_> = tool_calls
         .iter()
@@ -236,6 +274,7 @@ pub async fn execute_tools_parallel(
                 observer,
                 cancellation_token,
                 receipt_generator,
+                audit_logger.clone(),
             )
         })
         .collect();
@@ -253,6 +292,7 @@ pub async fn execute_tools_sequential(
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     receipt_generator: Option<&super::tool_receipts::ReceiptGenerator>,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 ) -> Result<Vec<ToolExecutionOutcome>> {
     let mut outcomes = Vec::with_capacity(tool_calls.len());
 
@@ -266,6 +306,7 @@ pub async fn execute_tools_sequential(
                 observer,
                 cancellation_token,
                 receipt_generator,
+                audit_logger.clone(),
             )
             .await?,
         );

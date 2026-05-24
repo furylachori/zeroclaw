@@ -1112,12 +1112,16 @@ pub async fn agent_turn(
     channel_reply_target: Option<&str>,
     multimodal_config: &zeroclaw_config::schema::MultimodalConfig,
     max_tool_iterations: usize,
+    pacing: &zeroclaw_config::schema::PacingConfig,
+    max_tool_result_chars: usize,
+    context_token_budget: usize,
     approval: Option<&ApprovalManager>,
     excluded_tools: &[String],
     dedup_exempt_tools: &[String],
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     model_switch_callback: Option<ModelSwitchCallback>,
     channel: Option<&dyn Channel>,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 ) -> Result<String> {
     run_tool_call_loop(
         model_provider,
@@ -1140,13 +1144,14 @@ pub async fn agent_turn(
         dedup_exempt_tools,
         activated_tools,
         model_switch_callback,
-        &zeroclaw_config::schema::PacingConfig::default(),
-        0,    // max_tool_result_chars: 0 = disabled (legacy callers)
-        0,    // context_token_budget: 0 = disabled (legacy callers)
-        None, // shared_budget: no shared budget for legacy callers
+        pacing,
+        max_tool_result_chars,
+        context_token_budget,
+        None,
         channel,
-        None, // receipt_generator
-        None, // collected_receipts
+        None,
+        None,
+        audit_logger,
     )
     .await
 }
@@ -1289,6 +1294,7 @@ pub async fn run_tool_call_loop(
     channel: Option<&dyn Channel>,
     receipt_generator: Option<&crate::agent::tool_receipts::ReceiptGenerator>,
     collected_receipts: Option<&std::sync::Mutex<Vec<String>>>,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 ) -> Result<String> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
@@ -2387,6 +2393,7 @@ pub async fn run_tool_call_loop(
                 observer,
                 cancellation_token.as_ref(),
                 receipt_generator,
+                audit_logger.as_ref().map(|l| l.clone()),
             )
             .await?
         } else {
@@ -2397,6 +2404,7 @@ pub async fn run_tool_call_loop(
                 observer,
                 cancellation_token.as_ref(),
                 receipt_generator,
+                audit_logger.as_ref().map(|l| l.clone()),
             )
             .await?
         };
@@ -2808,6 +2816,7 @@ pub async fn run(
     session_state_file: Option<PathBuf>,
     allowed_tools: Option<Vec<String>>,
     overrides: AgentRunOverrides,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 ) -> Result<String> {
     use ::zeroclaw_log::Instrument;
     let agent = config
@@ -2858,7 +2867,13 @@ pub async fn run(
         let is_subagent_caller = overrides.is_subagent;
         let security = match overrides.security {
             Some(sec) => sec,
-            None => Arc::new(SecurityPolicy::for_agent(&config, agent_alias)?),
+            None => Arc::new(SecurityPolicy::for_agent(
+                &config,
+                agent_alias,
+                audit_logger
+                    .as_ref()
+                    .map(|l| l.clone() as Arc<dyn zeroclaw_config::policy::AuditSink>),
+            )?),
         };
 
         let agent_provider_resolved = config
@@ -2936,6 +2951,7 @@ pub async fn run(
             &config,
             None,
             is_subagent_caller,
+            None,
         );
 
         let peripheral_tools: Vec<Box<dyn Tool>> = if let Some(f) = PERIPHERAL_TOOLS_FN.get() {
@@ -3522,6 +3538,7 @@ pub async fn run(
                             None, // channel: CLI mode — uses prompt_cli
                             None, // receipt_generator
                             None, // collected_receipts
+                            audit_logger.as_ref().map(|l| l.clone()),
                         ),
                     )
                     .await
@@ -3906,6 +3923,7 @@ pub async fn run(
                                 None, // channel: interactive CLI — uses prompt_cli
                                 None, // receipt_generator
                                 None, // collected_receipts
+                                audit_logger.as_ref().map(|l| l.clone()),
                             ),
                         )
                         .await
@@ -4112,6 +4130,7 @@ pub async fn process_message(
     agent_alias: &str,
     message: &str,
     session_id: Option<&str>,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 ) -> Result<String> {
     use ::zeroclaw_log::Instrument;
     let agent = config
@@ -4163,7 +4182,13 @@ pub async fn process_message(
             Arc::from(observability::create_observer(&config.observability));
         let runtime: Arc<dyn platform::RuntimeAdapter> =
             Arc::from(platform::create_runtime(&config.runtime)?);
-        let security = Arc::new(SecurityPolicy::for_agent(&config, agent_alias)?);
+        let security = Arc::new(SecurityPolicy::for_agent(
+            &config,
+            agent_alias,
+            audit_logger
+                .as_ref()
+                .map(|l| l.clone() as Arc<dyn zeroclaw_config::policy::AuditSink>),
+        )?);
         let (provider_name, _provider_alias, agent_model_provider) = match config
             .resolved_model_provider_for_agent(agent_alias)
         {
@@ -4227,6 +4252,7 @@ pub async fn process_message(
             &config,
             None,
             false,
+            None,
         );
         let peripheral_tools: Vec<Box<dyn Tool>> = if let Some(f) = PERIPHERAL_TOOLS_FN.get() {
             f(config.peripherals.clone()).await.unwrap_or_default()
@@ -4588,12 +4614,16 @@ pub async fn process_message(
             None,
             &config.multimodal,
             agent.max_tool_iterations,
+            &config.pacing,
+            agent.max_tool_result_chars,
+            0,
             Some(&approval_manager),
             &excluded_tools,
             &agent.tool_call_dedup_exempt,
             activated_handle_pm.as_ref(),
             None,
             None, // channel: process_message path has no channel ref
+            audit_logger.as_ref().map(|l| l.clone()),
         )
         .await
     };
@@ -5085,6 +5115,7 @@ mod tests {
             &observer,
             None,
             None,
+            None,
         )
         .await;
         assert!(result.is_ok(), "execute_one_tool should not panic or error");
@@ -5116,6 +5147,7 @@ mod tests {
             &observer,
             None,
             None, // receipt_generator
+            None,
         )
         .await
         .expect("suffix alias should execute the unique activated tool");
@@ -5138,6 +5170,7 @@ mod tests {
             &observer,
             None,
             None, // receipt_generator
+            None,
         )
         .await
         .expect("empty successful tool output should still execute");
@@ -5988,6 +6021,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect_err("model_provider without vision support should fail");
@@ -6044,6 +6078,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("oversized payload should be skipped and continue as text-only");
@@ -6104,6 +6139,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("valid multimodal payload should pass");
@@ -6155,6 +6191,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect_err("should fail without vision_model_provider config");
@@ -6213,6 +6250,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect_err("should fail when vision model_provider cannot be created");
@@ -6272,6 +6310,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("text-only messages should succeed with default model_provider");
@@ -6331,6 +6370,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect_err("should fail due to nonexistent vision model_provider");
@@ -6389,6 +6429,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("empty image markers should not trigger vision routing");
@@ -6446,6 +6487,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect_err("should attempt vision model_provider creation for multiple images");
@@ -6587,6 +6629,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("parallel execution should complete");
@@ -6667,6 +6710,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("cron_add delivery defaults should be injected");
@@ -6739,6 +6783,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("explicit delivery mode should be preserved");
@@ -6806,6 +6851,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("loop should finish after deduplicating repeated calls");
@@ -6886,6 +6932,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("non-interactive shell should succeed for low-risk command");
@@ -6956,6 +7003,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("loop should finish with exempt tool executing twice");
@@ -7046,6 +7094,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("loop should complete");
@@ -7110,6 +7159,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("native fallback id flow should complete");
@@ -7178,6 +7228,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("malformed tool protocol should retry and recover");
@@ -7241,6 +7292,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("business JSON should be returned as normal text");
@@ -7302,6 +7354,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("unknown business JSON should be returned as normal text");
@@ -7366,6 +7419,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("malformed tool protocol should return a safe fallback");
@@ -7427,6 +7481,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("toolcalls reference JSON should remain visible without tools");
@@ -7487,6 +7542,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("toolcalls reference JSON should remain visible without tools");
@@ -7539,6 +7595,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("schema JSON should remain visible without tools");
@@ -7592,6 +7649,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("audit JSON should remain visible without tools");
@@ -7645,6 +7703,7 @@ mod tests {
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("reference JSON should remain visible without tools");
@@ -7700,6 +7759,7 @@ This is an example, not an invocation."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("tool_call tag examples should remain visible without tools");
@@ -7760,6 +7820,7 @@ This is an example, not an invocation."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("registered tool_call fenced examples should remain visible");
@@ -7832,6 +7893,7 @@ This is an example, not an invocation."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("registered tool_call tag examples should remain visible");
@@ -7887,6 +7949,7 @@ Done."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("tagged tool protocol with trailing text should retry and recover");
@@ -7945,6 +8008,7 @@ Done."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("embedded fenced tool protocol should retry and recover");
@@ -8001,6 +8065,7 @@ Done."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("standalone tool_call fence should retry and recover without tools");
@@ -8058,6 +8123,7 @@ This is an example, not an invocation."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("tool_call fenced examples should remain visible without tools");
@@ -8172,6 +8238,7 @@ This is an example, not an invocation."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("split tool_call fenced examples should remain visible without tools");
@@ -8237,6 +8304,7 @@ This is an example, not an invocation."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("JSON-fenced tool protocol examples should remain visible without tools");
@@ -8306,6 +8374,7 @@ This is an example, not an invocation."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("streamed fenced tool call should execute and continue");
@@ -8395,6 +8464,7 @@ This is an example, not an invocation."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("native tool-call text should be relayed through on_delta");
@@ -8463,6 +8533,7 @@ This is an example, not an invocation."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("streaming model_provider should complete");
@@ -8534,6 +8605,7 @@ This is an example, not an invocation."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("streaming tool loop should execute tool and finish");
@@ -9389,6 +9461,7 @@ This is an example, not an invocation."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("native streaming events should preserve tool loop semantics");
@@ -9480,6 +9553,7 @@ This is an example, not an invocation."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("routed streaming model_provider should complete");
@@ -9558,12 +9632,16 @@ This is an example, not an invocation."#;
                 None,
                 &zeroclaw_config::schema::MultimodalConfig::default(),
                 4,
+                &zeroclaw_config::schema::PacingConfig::default(),
+                0,
+                0,
                 None,
                 &[],
                 &[],
                 Some(&activated),
                 None,
                 None, // channel
+                None, // audit_logger
             )
             .await
             .expect("wrapper path should execute activated tools");
@@ -10807,6 +10885,7 @@ Let me check the result."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("tool loop should complete");
@@ -10963,6 +11042,7 @@ Let me check the result."#;
                     None, // channel
                     None, // receipt_generator
                     None, // collected_receipts
+                    None,
                 ),
             )
             .await
@@ -11015,6 +11095,7 @@ Let me check the result."#;
             &zeroclaw_config::schema::PacingConfig::default(),
             0,
             0,
+            None,
             None,
             None,
             None,
@@ -11113,6 +11194,7 @@ Let me check the result."#;
                     None, // channel
                     None, // receipt_generator
                     None, // collected_receipts
+                    None,
                 ),
             )
             .await
@@ -11174,6 +11256,7 @@ Let me check the result."#;
             None, // channel
             None, // receipt_generator
             None, // collected_receipts
+            None,
         )
         .await
         .expect("should succeed without cost scope");

@@ -1642,20 +1642,20 @@ async fn main() -> Result<()> {
                 Box::new(zeroclaw_channels::cli::CliChannel::new("cli"))
             }));
 
-            Box::pin(agent::run(
-                config,
-                &agent_alias,
-                message,
-                model_provider,
-                model,
-                final_temperature,
-                peripheral,
-                true,
-                session_state_file,
-                None,
-                zeroclaw_runtime::agent::loop_::AgentRunOverrides::default(),
-                None,
-            ))
+             Box::pin(agent::run(
+                 config,
+                 &agent_alias,
+                 message,
+                 model_provider,
+                 model,
+                 final_temperature,
+                 peripheral,
+                 true,
+                 session_state_file,
+                 None,
+                 zeroclaw_runtime::agent::loop_::AgentRunOverrides::default(),
+                 None,
+             ))
             .await
             .map(|_| ())
         }
@@ -1943,7 +1943,7 @@ async fn main() -> Result<()> {
             #[cfg(feature = "agent-runtime")]
             let mut audit_logger: Option<
                 std::sync::Arc<zeroclaw_runtime::security::audit::AuditLogger>,
-            > = None;
+            >;
             loop {
                 // Per-iteration clones so the subsystem closures (which
                 // `move`-capture) don't consume the outer bindings on the
@@ -2000,7 +2000,7 @@ async fn main() -> Result<()> {
 
                 let subsystems = daemon::DaemonSubsystems {
                     #[cfg(feature = "gateway")]
-                    gateway_start: Some(Box::new(move |host, port, config, tx, reload_tx| {
+                    gateway_start: Some(Box::new(move |host, port, config, tx, reload_tx, audit_logger| {
                         let canvas_store = canvas_store_for_gateway.clone();
                         Box::pin(async move {
                             Box::pin(zeroclaw_gateway::run_gateway(
@@ -2010,19 +2010,21 @@ async fn main() -> Result<()> {
                                 tx,
                                 reload_tx,
                                 Some(canvas_store),
+                                audit_logger,
                             ))
                             .await
                         })
                     })),
                     #[cfg(not(feature = "gateway"))]
                     gateway_start: None,
-                    channels_start: Some(Box::new(move |config, cancel| {
+                    channels_start: Some(Box::new(move |config, cancel, audit_logger| {
                         let canvas_store = canvas_store_for_channels.clone();
                         Box::pin(async move {
                             Box::pin(zeroclaw_channels::orchestrator::start_channels(
                                 config,
                                 Some(canvas_store),
                                 cancel,
+                                audit_logger,
                             ))
                             .await
                         })
@@ -2336,7 +2338,7 @@ async fn main() -> Result<()> {
         Commands::Channel { channel_command } => match channel_command {
             ChannelCommands::Start => {
                 let cancel = tokio_util::sync::CancellationToken::new();
-                Box::pin(channels::start_channels(config, None, cancel)).await
+                Box::pin(channels::start_channels(config, None, cancel, None)).await
             }
             ChannelCommands::Doctor => Box::pin(channels::doctor_channels(config)).await,
             other => Box::pin(channels::handle_command(other, &config)).await,
@@ -3918,7 +3920,7 @@ async fn run_gateway_if_enabled(
     // /admin/reload returns 503 with a clear "no supervisor; restart
     // manually" message, and None for canvas_store so the gateway falls
     // back to its own default.
-    Box::pin(gateway::run_gateway(host, port, config, tx, None, None)).await
+    Box::pin(gateway::run_gateway(host, port, config, tx, None, None, None)).await
 }
 
 #[cfg(not(feature = "gateway"))]

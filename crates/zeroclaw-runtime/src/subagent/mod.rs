@@ -30,7 +30,7 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use zeroclaw_config::policy::SecurityPolicy;
+use zeroclaw_config::policy::{AuditSink, SecurityPolicy};
 use zeroclaw_config::schema::Config;
 
 /// Optional narrowing applied to a SubAgent at spawn time. `None` on
@@ -98,6 +98,7 @@ pub struct SubAgentSpawn {
     pub parent_alias: String,
     pub parent_policy: Arc<SecurityPolicy>,
     pub parent_allowed_agent_aliases: HashSet<String>,
+    pub audit_logger: Option<Arc<dyn AuditSink>>,
 }
 
 impl SubAgentSpawn {
@@ -106,13 +107,17 @@ impl SubAgentSpawn {
     /// configured agent — the spawn site surfaces a structured
     /// failure instead of invoking the agent loop on a nonexistent
     /// identity.
-    pub fn for_agent(config: &Config, agent_alias: &str) -> Result<Self> {
+    pub fn for_agent(
+        config: &Config,
+        agent_alias: &str,
+        audit_logger: Option<Arc<dyn AuditSink>>,
+    ) -> Result<Self> {
         let agent = config
             .agents
             .get(agent_alias)
             .with_context(|| format!("no agent configured under alias {agent_alias:?}"))?;
 
-        let parent_policy = SecurityPolicy::for_agent(config, agent_alias)
+        let parent_policy = SecurityPolicy::for_agent(config, agent_alias, audit_logger)
             .map(Arc::new)
             .with_context(|| {
                 format!("could not resolve security policy for agent {agent_alias:?}")
@@ -130,6 +135,7 @@ impl SubAgentSpawn {
             parent_alias: agent_alias.to_string(),
             parent_policy,
             parent_allowed_agent_aliases,
+            audit_logger: None,
         })
     }
 
@@ -223,7 +229,7 @@ mod tests {
     #[test]
     fn for_agent_resolves_parent_identity_from_config() {
         let config = config_with_agent("alpha");
-        let ctx = SubAgentSpawn::for_agent(&config, "alpha")
+        let ctx = SubAgentSpawn::for_agent(&config, "alpha", None)
             .expect("for_agent must succeed for a configured agent")
             .build(SubAgentOverrides::default())
             .expect("inherits-verbatim build must succeed");
@@ -236,7 +242,7 @@ mod tests {
 
     #[test]
     fn for_agent_errors_on_unknown_alias() {
-        let err = SubAgentSpawn::for_agent(&Config::default(), "missing")
+        let err = SubAgentSpawn::for_agent(&Config::default(), "missing", None)
             .expect_err("unknown alias must error");
         assert!(
             err.to_string().contains("missing"),
@@ -247,7 +253,7 @@ mod tests {
     #[test]
     fn build_inherits_verbatim_when_overrides_are_default() {
         let config = config_with_agent("alpha");
-        let spawn = SubAgentSpawn::for_agent(&config, "alpha").unwrap();
+        let spawn = SubAgentSpawn::for_agent(&config, "alpha", None).unwrap();
         let parent_policy = spawn.parent_policy.clone();
         let parent_allowlist = spawn.parent_allowed_agent_aliases.clone();
 
@@ -259,7 +265,7 @@ mod tests {
     #[test]
     fn build_rejects_policy_override_that_escalates_paths() {
         let config = config_with_agent("alpha");
-        let spawn = SubAgentSpawn::for_agent(&config, "alpha").unwrap();
+        let spawn = SubAgentSpawn::for_agent(&config, "alpha", None).unwrap();
 
         let mut child_policy = (*spawn.parent_policy).clone();
         // Add an rw root the parent doesn't have — escalation.
@@ -280,7 +286,7 @@ mod tests {
     #[test]
     fn build_rejects_allowlist_override_with_alias_not_on_parent() {
         let config = config_with_agent("alpha");
-        let spawn = SubAgentSpawn::for_agent(&config, "alpha").unwrap();
+        let spawn = SubAgentSpawn::for_agent(&config, "alpha", None).unwrap();
 
         let mut rogue = HashSet::new();
         rogue.insert("rogue-agent".to_string());
@@ -300,7 +306,7 @@ mod tests {
     #[test]
     fn build_accepts_narrowed_allowlist_subset() {
         let config = config_with_agent("alpha");
-        let spawn = SubAgentSpawn::for_agent(&config, "alpha").unwrap();
+        let spawn = SubAgentSpawn::for_agent(&config, "alpha", None).unwrap();
 
         // Empty subset is still allowed; the bound parent alias is added back.
         let ctx = spawn
@@ -320,7 +326,7 @@ mod tests {
         // The override path (caller-supplied policy) is the one with
         // the bug; the inherit-verbatim path is correct by Arc reuse.
         let config = config_with_agent("alpha");
-        let spawn = SubAgentSpawn::for_agent(&config, "alpha").unwrap();
+        let spawn = SubAgentSpawn::for_agent(&config, "alpha", None).unwrap();
         let parent_policy = spawn.parent_policy.clone();
 
         // Burn the parent's action budget right up to the ceiling so

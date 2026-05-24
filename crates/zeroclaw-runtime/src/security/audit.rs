@@ -10,8 +10,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+use zeroclaw_config::policy::AuditSink;
 use zeroclaw_config::schema::AuditConfig;
 
 /// Well-known seed for the genesis entry's `prev_hash`.
@@ -203,6 +206,7 @@ fn compute_entry_hash(prev_hash: &str, event: &AuditEvent) -> String {
         "result": event.result,
         "security": event.security,
         "sequence": event.sequence,
+        "agent_alias": event.agent_alias,
     });
     let content_json = serde_json::to_string(&content).expect("serialize canonical content");
 
@@ -213,6 +217,7 @@ fn compute_entry_hash(prev_hash: &str, event: &AuditEvent) -> String {
 }
 
 /// Internal chain state tracked across writes.
+#[derive(Debug)]
 struct ChainState {
     prev_hash: String,
     sequence: u64,
@@ -224,6 +229,8 @@ pub struct AuditLogger {
     config: AuditConfig,
     #[allow(dead_code)] // WIP: buffered writes for batch flushing
     buffer: Mutex<Vec<AuditEvent>>,
+    /// Serializes concurrent writes to prevent interleaving in the audit log.
+    write_mutex: parking_lot::Mutex<()>,
     chain: Mutex<ChainState>,
     /// Signing key (loaded once at construction time if sign_events enabled)
     signing_key: Option<Vec<u8>>,
@@ -289,14 +296,14 @@ impl AuditLogger {
         // Resolve to absolute path and verify it stays within zeroclaw_dir
         let canonical_zeroclaw = std::fs::canonicalize(&zeroclaw_dir)
             .map_err(|e| anyhow::Error::msg(format!("invalid zeroclaw dir: {e}")))?;
-        let canonical_log_path = std::fs::canonicalize(&log_path)
-            .unwrap_or_else(|_| {
-                // If the target doesn't exist yet, canonicalize the parent
-                log_path.parent()
-                    .and_then(|p| std::fs::canonicalize(p).ok())
-                    .map(|p| p.join(log_path.file_name().unwrap_or_default()))
-                    .unwrap_or(log_path.clone())
-            });
+        let canonical_log_path = std::fs::canonicalize(&log_path).unwrap_or_else(|_| {
+            // If the target doesn't exist yet, canonicalize the parent
+            log_path
+                .parent()
+                .and_then(|p| std::fs::canonicalize(p).ok())
+                .map(|p| p.join(log_path.file_name().unwrap_or_default()))
+                .unwrap_or(log_path.clone())
+        });
 
         // Check the log path is within zeroclaw_dir
         if !canonical_log_path.starts_with(&canonical_zeroclaw) {
@@ -312,6 +319,7 @@ impl AuditLogger {
             log_path,
             config,
             buffer: Mutex::new(Vec::new()),
+            write_mutex: parking_lot::Mutex::new(()),
             chain: Mutex::new(chain_state),
             signing_key,
         })
@@ -346,10 +354,15 @@ impl AuditLogger {
             return Ok(());
         }
 
-        // Check log size and rotate if needed
+        // Check log size and rotate if needed (read-only metadata check — no lock ordering conflict)
         self.rotate_if_needed()?;
 
-        // Populate chain fields under the lock
+        // Acquire write lock FIRST to serialize all writes through file I/O.
+        // Hold it for the entire duration to prevent interleaving.
+        let _write_guard = self.write_mutex.lock();
+
+        // Populate chain fields while write lock is held (safe: only other chain lock taken
+        // under this same write guard, never the reverse).
         let mut chained = event.clone();
         {
             let mut state = self.chain.lock();
@@ -362,28 +375,51 @@ impl AuditLogger {
 
             state.prev_hash = chained.entry_hash.clone();
             state.sequence += 1;
-        }
+        } // chain lock dropped here — write_guard still held
 
         // Verify the file is not a symlink (prevent symlink attacks) — BEFORE opening
-        if self.log_path.symlink_metadata()
+        if self
+            .log_path
+            .symlink_metadata()
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false)
         {
             bail!("audit log path is a symlink — refusing to write for security");
         }
 
-        // Serialize and write
+        // Serialize
         let line = serde_json::to_string(&chained)?;
+
+        // Open with restricted permissions (Unix only) and append
+        #[cfg(unix)]
+        let mut open_opts = OpenOptions::new();
+        #[cfg(unix)]
+        let mut file = open_opts
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&self.log_path)?;
+        #[cfg(not(unix))]
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.log_path)?;
 
         writeln!(file, "{}", line)?;
-        file.sync_all()?;
+
+        // Sync according to configured mode
+        match self.config.sync_mode.as_str() {
+            "none" => {} // no sync (fastest, least durable)
+            "normal" => {
+                file.sync_data()?;
+            } // data only (default)
+            _ => {
+                file.sync_all()?;
+            } // "full" or unrecognized: full sync
+        }
 
         Ok(())
-    }
+    } // write_guard dropped here — next log() can proceed
 
     /// Log a command execution event.
     pub fn log_command_event(&self, entry: CommandExecutionLog<'_>) -> Result<()> {
@@ -455,6 +491,47 @@ impl AuditLogger {
     }
 }
 
+impl std::fmt::Debug for AuditLogger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuditLogger")
+            .field("log_path", &self.log_path)
+            .field("config", &self.config)
+            .field("buffer", &self.buffer)
+            .field("write_mutex", &self.write_mutex)
+            .field("chain", &self.chain)
+            .field("signing_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Read the last valid audit log entry from a file.
+///
+/// Returns `None` if the file doesn't exist, is empty, or contains no valid entries.
+fn read_last_valid_entry(log_path: &Path) -> Option<AuditEvent> {
+    let file = std::fs::File::open(log_path).ok()?;
+    let reader = BufReader::new(file);
+
+    let mut last_valid: Option<AuditEvent> = None;
+
+    for (idx, line) in reader.lines().enumerate() {
+        if idx >= 10_000_000 {
+            break;
+        }
+        let line = line.ok()?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str::<AuditEvent>(&line) {
+            let recomputed = compute_entry_hash(&entry.prev_hash, &entry);
+            if entry.entry_hash == recomputed {
+                last_valid = Some(entry);
+            }
+        }
+    }
+
+    last_valid
+}
+
 /// Recover chain state from an existing log file (including rotated files).
 ///
 /// Returns the genesis state if no valid entry is found in any file.
@@ -492,32 +569,25 @@ fn recover_chain_state(log_path: &Path) -> ChainState {
     }
 }
 
-/// Helper: read the last well-formed entry from a log file, or None if empty/invalid.
-fn read_last_valid_entry(log_path: &Path) -> Option<AuditEvent> {
-    let file = std::fs::File::open(log_path).ok()?;
-    let reader = BufReader::new(file);
-
-    // Limit to prevent /dev/zero hang — read at most 10_000_000 lines (~1GB of JSON)
-    let mut last_entry: Option<AuditEvent> = None;
-    for (idx, line_result) in reader.lines().enumerate() {
-        if idx >= 10_000_000 {
-            break; // Safety cap to prevent infinite reads
-        }
-        let line = line_result.ok()?;
-        if let Ok(entry) = serde_json::from_str::<AuditEvent>(&line) {
-            // Verify the entry hash is consistent
-            let recomputed = compute_entry_hash(&entry.prev_hash, &entry);
-            if entry.entry_hash == recomputed {
-                last_entry = Some(entry);
-            }
+/// Find all rotated log files in reverse chronological order (newest first).
+/// Returns vec![audit.log.1.log, audit.log.2.log, ...] for existing files only.
+fn find_chain_files(log_path: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for i in 1..=10 {
+        let rotated = format!("{}.{}.log", log_path.display().to_string(), i);
+        let rotated_path = PathBuf::from(&rotated);
+        if rotated_path.exists() {
+            files.push(rotated_path);
         }
     }
-    last_entry
+    files
 }
 
-/// Verify the integrity of an audit log's Merkle hash chain.
+/// Verify the integrity of an audit log's Merkle hash chain across all files
+/// (including rotated backups).
 ///
-/// Reads every entry from the log file and checks:
+/// Reads every entry from all rotated log files and the primary log file in
+/// chronological order and checks:
 /// - Each `entry_hash` matches the recomputed `SHA-256(prev_hash || content)`.
 /// - `prev_hash` links to the preceding entry (or the genesis seed for the first).
 /// - Sequence numbers are contiguous starting from 0.
@@ -526,11 +596,15 @@ fn read_last_valid_entry(log_path: &Path) -> Option<AuditEvent> {
 ///
 /// Returns `Ok(entry_count)` on success, or an error describing the first violation.
 pub fn verify_chain(log_path: &Path) -> Result<u64> {
-    let file = std::fs::File::open(log_path)?;
-    let reader = BufReader::new(file);
+    // Collect rotated files (newest-first: .1, .2, ...), then reverse to chronological (oldest-first)
+    let mut all_files = find_chain_files(log_path);
+    all_files.reverse(); // oldest rotated first (.10 down to .1)
+    // Add primary file at the end (it's the current newest)
+    all_files.push(log_path.to_path_buf());
 
     let mut expected_prev_hash = GENESIS_PREV_HASH.to_string();
     let mut expected_sequence: u64 = 0;
+    let mut total_entries: u64 = 0;
 
     // Attempt to load signing key from environment (optional)
     let signing_key = std::env::var("ZEROCLAW_AUDIT_SIGNING_KEY")
@@ -538,80 +612,109 @@ pub fn verify_chain(log_path: &Path) -> Result<u64> {
         .and_then(|key_hex| hex::decode(&key_hex).ok())
         .filter(|key_bytes| key_bytes.len() == 32);
 
-    for (line_idx, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let entry: AuditEvent = serde_json::from_str(&line)?;
+    for file_path in &all_files {
+        let file = std::fs::File::open(file_path)?;
+        let reader = BufReader::new(file);
 
-        // Check sequence continuity
-        if entry.sequence != expected_sequence {
-            bail!(
-                "sequence gap at line {}: expected {}, got {}",
-                line_idx + 1,
-                expected_sequence,
-                entry.sequence
-            );
-        }
+        for (line_idx, line) in reader.lines().enumerate() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let entry: AuditEvent = serde_json::from_str(&line)?;
 
-        // Check prev_hash linkage
-        if entry.prev_hash != expected_prev_hash {
-            bail!(
-                "prev_hash mismatch at line {} (sequence {}): expected {}, got {}",
-                line_idx + 1,
-                entry.sequence,
-                expected_prev_hash,
-                entry.prev_hash
-            );
-        }
-
-        // Recompute and verify entry_hash
-        let recomputed = compute_entry_hash(&entry.prev_hash, &entry);
-        if entry.entry_hash != recomputed {
-            bail!(
-                "entry_hash mismatch at line {} (sequence {}): expected {}, got {}",
-                line_idx + 1,
-                entry.sequence,
-                recomputed,
-                entry.entry_hash
-            );
-        }
-
-        // Verify signature if present and key is available
-        if let Some(ref signature) = entry.signature
-            && let Some(ref key_bytes) = signing_key
-        {
-            use hmac::{Hmac, Mac};
-            use sha2::Sha256;
-
-            let mut mac = Hmac::<Sha256>::new_from_slice(key_bytes).map_err(|_| {
-                ::zeroclaw_log::record!(
-                    ERROR,
-                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
-                        .with_outcome(::zeroclaw_log::EventOutcome::Failure),
-                    "audit log: HMAC-SHA256 verify rejected key length"
-                );
-                anyhow::Error::msg("Invalid HMAC key length during verification")
-            })?;
-            mac.update(entry.entry_hash.as_bytes());
-            let expected_sig = hex::encode(mac.finalize().into_bytes());
-
-            if signature != &expected_sig {
+            // Check sequence continuity
+            if entry.sequence != expected_sequence {
                 bail!(
-                    "signature verification failed at line {} (sequence {}): signature mismatch",
+                    "sequence gap at {} line {}: expected {}, got {}",
+                    file_path.display(),
                     line_idx + 1,
+                    expected_sequence,
                     entry.sequence
                 );
             }
-        }
-        // If signature present but key not available, skip verification (backward compat)
 
-        expected_prev_hash = entry.entry_hash.clone();
-        expected_sequence += 1;
+            // Check prev_hash linkage
+            if entry.prev_hash != expected_prev_hash {
+                bail!(
+                    "prev_hash mismatch at {} line {} (sequence {}): expected {}, got {}",
+                    file_path.display(),
+                    line_idx + 1,
+                    entry.sequence,
+                    expected_prev_hash,
+                    entry.prev_hash
+                );
+            }
+
+            // Recompute and verify entry_hash
+            let recomputed = compute_entry_hash(&entry.prev_hash, &entry);
+            if entry.entry_hash != recomputed {
+                bail!(
+                    "entry_hash mismatch at {} line {} (sequence {}): expected {}, got {}",
+                    file_path.display(),
+                    line_idx + 1,
+                    entry.sequence,
+                    recomputed,
+                    entry.entry_hash
+                );
+            }
+
+            // Verify signature if present and key is available
+            if let Some(ref signature) = entry.signature
+                && let Some(ref key_bytes) = signing_key
+            {
+                use hmac::{Hmac, Mac};
+                use sha2::Sha256;
+
+                let mut mac = Hmac::<Sha256>::new_from_slice(key_bytes).map_err(|_| {
+                    ::zeroclaw_log::record!(
+                        ERROR,
+                        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                            .with_outcome(::zeroclaw_log::EventOutcome::Failure),
+                        "audit log: HMAC-SHA256 verify rejected key length"
+                    );
+                    anyhow::Error::msg("Invalid HMAC key length during verification")
+                })?;
+                mac.update(entry.entry_hash.as_bytes());
+                let expected_sig = hex::encode(mac.finalize().into_bytes());
+
+                if signature != &expected_sig {
+                    bail!(
+                        "signature verification failed at {} line {} (sequence {}): signature mismatch",
+                        file_path.display(),
+                        line_idx + 1,
+                        entry.sequence
+                    );
+                }
+            }
+
+            expected_prev_hash = entry.entry_hash.clone();
+            expected_sequence += 1;
+            total_entries += 1;
+        }
     }
 
-    Ok(expected_sequence)
+    Ok(total_entries)
+}
+
+impl AuditSink for AuditLogger {
+    fn log_policy_violation(&self, action: &str, reason: &str) {
+        let event = AuditEvent::new(AuditEventType::PolicyViolation)
+            .with_actor("system".to_string(), None, None)
+            .with_action(action.to_string(), "policy".to_string(), false, false)
+            .with_result(false, None, 0, Some(reason.to_string()));
+
+        if let Err(_e) = self.log(&event) {
+            // Don't panic on audit failure - log a warning instead
+            let err_msg = format!("Failed to write policy violation audit log: {_e}");
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure),
+                 err_msg
+            );
+        }
+    }
 }
 
 #[cfg(test)]
