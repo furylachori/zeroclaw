@@ -1642,19 +1642,20 @@ async fn main() -> Result<()> {
                 Box::new(zeroclaw_channels::cli::CliChannel::new("cli"))
             }));
 
-            Box::pin(agent::run(
-                config,
-                &agent_alias,
-                message,
-                model_provider,
-                model,
-                final_temperature,
-                peripheral,
-                true,
-                session_state_file,
-                None,
-                zeroclaw_runtime::agent::loop_::AgentRunOverrides::default(),
-            ))
+             Box::pin(agent::run(
+                 config,
+                 &agent_alias,
+                 message,
+                 model_provider,
+                 model,
+                 final_temperature,
+                 peripheral,
+                 true,
+                 session_state_file,
+                 None,
+                 zeroclaw_runtime::agent::loop_::AgentRunOverrides::default(),
+                 None,
+             ))
             .await
             .map(|_| ())
         }
@@ -1937,15 +1938,69 @@ async fn main() -> Result<()> {
             // the same across reloads — only the in-process subsystems
             // tear down + re-instantiate.
             let mut current_config = config;
+            // Declared outside the loop so it gets moved into DaemonSubsystems
+            // on first iteration; re-initialized inside the loop on each reload.
+            #[cfg(feature = "agent-runtime")]
+            let mut audit_logger: Option<
+                std::sync::Arc<zeroclaw_runtime::security::audit::AuditLogger>,
+            >;
             loop {
                 // Per-iteration clones so the subsystem closures (which
                 // `move`-capture) don't consume the outer bindings on the
                 // first iteration; reload would otherwise see a moved value.
                 let canvas_store_for_gateway = canvas_store_for_gateway.clone();
                 let canvas_store_for_channels = canvas_store_for_channels.clone();
+
+                // Initialize audit logger if enabled in config
+                #[cfg(feature = "agent-runtime")]
+                {
+                    use zeroclaw_runtime::security::audit::AuditLogger;
+                    if current_config.security.audit.enabled {
+                        let zeroclaw_dir = current_config
+                            .config_path
+                            .parent()
+                            .map(std::path::Path::to_path_buf)
+                            .unwrap_or_else(|| std::path::PathBuf::from("."));
+                        audit_logger = match AuditLogger::new(
+                            current_config.security.audit.clone(),
+                            zeroclaw_dir,
+                        ) {
+                            Ok(logger) => {
+                                ::zeroclaw_log::record!(
+                                    INFO,
+                                    ::zeroclaw_log::Event::new(
+                                        module_path!(),
+                                        ::zeroclaw_log::Action::Note
+                                    )
+                                    .with_outcome(::zeroclaw_log::EventOutcome::Success),
+                                    format!(
+                                        "Audit logger initialized: {}",
+                                        current_config.security.audit.log_path
+                                    )
+                                );
+                                Some(std::sync::Arc::new(logger))
+                            }
+                            Err(e) => {
+                                ::zeroclaw_log::record!(
+                                    WARN,
+                                    ::zeroclaw_log::Event::new(
+                                        module_path!(),
+                                        ::zeroclaw_log::Action::Fail
+                                    )
+                                    .with_outcome(::zeroclaw_log::EventOutcome::Failure),
+                                    "Failed to initialize audit logger: {e}"
+                                );
+                                None
+                            }
+                        };
+                    } else {
+                        audit_logger = None;
+                    }
+                }
+
                 let subsystems = daemon::DaemonSubsystems {
                     #[cfg(feature = "gateway")]
-                    gateway_start: Some(Box::new(move |host, port, config, tx, reload_tx| {
+                    gateway_start: Some(Box::new(move |host, port, config, tx, reload_tx, audit_logger| {
                         let canvas_store = canvas_store_for_gateway.clone();
                         Box::pin(async move {
                             Box::pin(zeroclaw_gateway::run_gateway(
@@ -1955,19 +2010,21 @@ async fn main() -> Result<()> {
                                 tx,
                                 reload_tx,
                                 Some(canvas_store),
+                                audit_logger,
                             ))
                             .await
                         })
                     })),
                     #[cfg(not(feature = "gateway"))]
                     gateway_start: None,
-                    channels_start: Some(Box::new(move |config, cancel| {
+                    channels_start: Some(Box::new(move |config, cancel, audit_logger| {
                         let canvas_store = canvas_store_for_channels.clone();
                         Box::pin(async move {
                             Box::pin(zeroclaw_channels::orchestrator::start_channels(
                                 config,
                                 Some(canvas_store),
                                 cancel,
+                                audit_logger,
                             ))
                             .await
                         })
@@ -2000,6 +2057,7 @@ async fn main() -> Result<()> {
                             })
                         }
                     })),
+                    audit_logger,
                 };
                 let exit = Box::pin(daemon::run(
                     current_config.clone(),
@@ -2280,7 +2338,7 @@ async fn main() -> Result<()> {
         Commands::Channel { channel_command } => match channel_command {
             ChannelCommands::Start => {
                 let cancel = tokio_util::sync::CancellationToken::new();
-                Box::pin(channels::start_channels(config, None, cancel)).await
+                Box::pin(channels::start_channels(config, None, cancel, None)).await
             }
             ChannelCommands::Doctor => Box::pin(channels::doctor_channels(config)).await,
             other => Box::pin(channels::handle_command(other, &config)).await,
@@ -3862,7 +3920,7 @@ async fn run_gateway_if_enabled(
     // /admin/reload returns 503 with a clear "no supervisor; restart
     // manually" message, and None for canvas_store so the gateway falls
     // back to its own default.
-    Box::pin(gateway::run_gateway(host, port, config, tx, None, None)).await
+    Box::pin(gateway::run_gateway(host, port, config, tx, None, None, None)).await
 }
 
 #[cfg(not(feature = "gateway"))]

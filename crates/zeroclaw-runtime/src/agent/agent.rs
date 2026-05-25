@@ -70,6 +70,8 @@ pub struct Agent {
     hook_runner: Option<Arc<crate::hooks::HookRunner>>,
     /// Approval manager for direct Agent execution paths such as ACP.
     approval_manager: Option<Arc<ApprovalManager>>,
+    /// Shared audit logger for tamper-evident tool execution logging
+    pub audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
     /// Late-bound channel maps for the four channel-driven tools
     /// (`ask_user`, `reaction`, `escalate_to_human`, `poll`). Held so that
     /// per-session callers (e.g. the ACP server) can register a back-channel
@@ -160,6 +162,7 @@ pub struct AgentBuilder {
     activated_tools: Option<Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     hook_runner: Option<Arc<crate::hooks::HookRunner>>,
     approval_manager: Option<Arc<ApprovalManager>>,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 }
 
 impl Default for AgentBuilder {
@@ -200,6 +203,7 @@ impl AgentBuilder {
             activated_tools: None,
             hook_runner: None,
             approval_manager: None,
+            audit_logger: None,
         }
     }
 
@@ -366,6 +370,17 @@ impl AgentBuilder {
         self
     }
 
+    pub fn audit_logger(
+        mut self,
+        logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
+    ) -> Self {
+        self.audit_logger = logger;
+        self
+    }
+
+}
+
+impl AgentBuilder {
     pub fn build(self) -> Result<Agent> {
         let mut tools = self.tools.ok_or_else(|| {
             ::zeroclaw_log::record!(
@@ -471,6 +486,7 @@ impl AgentBuilder {
             activated_tools: self.activated_tools,
             hook_runner: self.hook_runner,
             approval_manager: self.approval_manager,
+            audit_logger: self.audit_logger,
             channel_handles: AgentChannelHandles::default(),
         })
     }
@@ -719,6 +735,13 @@ impl Agent {
             None
         };
 
+        let audit_logger = crate::security::audit::AuditLogger::new(
+            config.security.audit.clone(),
+            config.data_dir.clone(),
+        )
+        .ok()
+        .map(Arc::new);
+
         let (
             mut tools,
             delegate_handle,
@@ -744,6 +767,7 @@ impl Agent {
             config,
             None,
             false,
+            audit_logger.clone(),
         );
 
         // ── Wire MCP tools (non-fatal) ─────────────────────────────
@@ -956,6 +980,7 @@ impl Agent {
             } else {
                 None
             })
+            .audit_logger(audit_logger.clone())
             .approval_manager(Some(Arc::new(approval_manager)))
             .build()?;
 
@@ -1240,6 +1265,22 @@ impl Agent {
             };
 
         let duration = start.elapsed();
+
+        if let Some(ref logger) = self.audit_logger
+            && logger
+                .log_command(
+                    "cli",
+                    &tool_args.to_string(),
+                    "unknown",
+                    false,
+                    true,
+                    success,
+                    duration.as_millis() as u64,
+                )
+                .is_err()
+        {
+            // Error already logged inside log_command
+        }
 
         // ── Hook: after_tool_call (void) ─────────────────────────
         if let Some(ref hooks) = self.hook_runner {

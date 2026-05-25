@@ -176,7 +176,7 @@ fn check_tool_registry(config: &crate::config::Config) -> CheckResult {
     }
     let mut total_tools = 0usize;
     for alias in &enabled_agents {
-        let security = match crate::security::SecurityPolicy::for_agent(config, alias) {
+        let security = match crate::security::SecurityPolicy::for_agent(config, alias, None) {
             Ok(p) => std::sync::Arc::new(p),
             Err(e) => return CheckResult::fail("tools", format!("agent {alias}: {e}")),
         };
@@ -231,7 +231,7 @@ fn check_security_policy(config: &crate::config::Config) -> CheckResult {
                 ),
             );
         };
-        if let Err(e) = crate::security::SecurityPolicy::for_agent(config, alias) {
+        if let Err(e) = crate::security::SecurityPolicy::for_agent(config, alias, None) {
             return CheckResult::fail("security", format!("agent {alias}: {e}"));
         }
         summaries.push(format!("{alias}={:?}", profile.level));

@@ -10226,6 +10226,17 @@ pub struct TelegramConfig {
     /// are not exposed to the model when responding via this channel.
     #[serde(default)]
     pub excluded_tools: Vec<String>,
+
+    /// When `true`, audio/voice messages are downloaded and saved to disk even
+    /// when transcription is disabled. When `false` (default), audio is skipped
+    /// if transcription is not configured. Requires `workspace` to be set.
+    #[serde(default)]
+    pub process_audio_without_transcription: bool,
+    /// When `true`, transcribed audio files are saved to the workspace directory
+    /// alongside the transcript. When `false` (default), audio is held in memory
+    /// only and not persisted to disk.
+    #[serde(default)]
+    pub save_transcribed_audio: bool,
 }
 
 impl ChannelConfig for TelegramConfig {
@@ -11811,6 +11822,16 @@ pub struct AuditConfig {
     /// Sign events with HMAC for tamper evidence
     #[serde(default)]
     pub sign_events: bool,
+
+    /// How aggressively to sync audit entries to disk.
+    /// - "every": fsync after every write (safest, slowest)
+    /// - "batch": fsync after every N writes (good balance)
+    /// - "periodic": fsync every N seconds
+    /// - "none": no explicit fsync (fastest, may lose entries on crash)
+    #[serde(default = "default_sync_mode")]
+    pub sync_mode: String,
+
+
 }
 
 fn default_audit_enabled() -> bool {
@@ -11825,6 +11846,12 @@ fn default_audit_max_size_mb() -> u32 {
     100
 }
 
+fn default_sync_mode() -> String {
+    "every".to_string()
+}
+
+
+
 impl Default for AuditConfig {
     fn default() -> Self {
         Self {
@@ -11832,6 +11859,7 @@ impl Default for AuditConfig {
             log_path: default_audit_log_path(),
             max_size_mb: default_audit_max_size_mb(),
             sign_events: false,
+            sync_mode: default_sync_mode(),
         }
     }
 }

@@ -356,6 +356,7 @@ pub fn all_tools(
     root_config: &zeroclaw_config::schema::Config,
     canvas_store: Option<CanvasStore>,
     is_subagent_caller: bool,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 ) -> (
     Vec<Box<dyn Tool>>,
     Option<DelegateParentToolsHandle>,
@@ -382,6 +383,7 @@ pub fn all_tools(
         root_config,
         canvas_store,
         is_subagent_caller,
+        audit_logger,
     )
 }
 
@@ -409,6 +411,7 @@ pub fn all_tools_with_runtime(
     root_config: &zeroclaw_config::schema::Config,
     canvas_store: Option<CanvasStore>,
     is_subagent_caller: bool,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 ) -> (
     Vec<Box<dyn Tool>>,
     Option<DelegateParentToolsHandle>,
@@ -462,7 +465,11 @@ pub fn all_tools_with_runtime(
             security.clone(),
             agent_alias,
         )),
-        Arc::new(CronRunTool::new(config.clone(), security.clone())),
+        Arc::new(CronRunTool::new(
+            config.clone(),
+            security.clone(),
+            audit_logger.clone(),
+        )),
         Arc::new(CronRunsTool::new(config.clone())),
         Arc::new(MemoryStoreTool::new(memory.clone(), security.clone())),
         Arc::new(MemoryRecallTool::new(memory.clone())),
@@ -475,12 +482,17 @@ pub fn all_tools_with_runtime(
             agent_alias,
         )),
         Arc::new(
-            SpawnSubagentTool::new(Arc::new(root_config.clone()), agent_alias)
-                .with_subagent_caller(is_subagent_caller),
+            SpawnSubagentTool::new(
+                Arc::new(root_config.clone()),
+                agent_alias,
+                audit_logger.clone(),
+            )
+            .with_subagent_caller(is_subagent_caller),
         ),
         Arc::new(SendMessageToPeerTool::new(
             Arc::new(root_config.clone()),
             agent_alias,
+            audit_logger.clone(),
         )),
         Arc::new(ModelRoutingConfigTool::new(
             config.clone(),
@@ -1099,7 +1111,8 @@ pub fn all_tools_with_runtime(
         .with_risk_profiles(root_config.risk_profiles.clone())
         .with_runtime_profiles(root_config.runtime_profiles.clone())
         .with_skill_bundles(root_config.skill_bundles.clone())
-        .with_root_config(config.clone());
+        .with_root_config(config.clone())
+        .with_audit_logger(audit_logger.clone());
         tool_arcs.push(Arc::new(delegate_tool));
         Some(parent_tools)
     };
@@ -1241,6 +1254,7 @@ mod tests {
             &cfg,
             None,
             false,
+            None,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"browser_open"));
@@ -1287,6 +1301,7 @@ mod tests {
             &cfg,
             None,
             false,
+            None,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"browser_open"));
@@ -1434,6 +1449,7 @@ mod tests {
             &cfg,
             None,
             false,
+            None,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"delegate"));
@@ -1471,6 +1487,7 @@ mod tests {
             &cfg,
             None,
             false,
+            None,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"delegate"));
@@ -1510,6 +1527,7 @@ mod tests {
             &cfg,
             None,
             false,
+            None,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"read_skill"));
@@ -1548,6 +1566,7 @@ mod tests {
             &cfg,
             None,
             false,
+            None,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"read_skill"));

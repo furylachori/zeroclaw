@@ -24,7 +24,11 @@ const SCHEDULER_COMPONENT: &str = "scheduler";
 /// to connected dashboard/SSE clients.
 pub type EventBroadcast = Option<tokio::sync::broadcast::Sender<serde_json::Value>>;
 
-pub async fn run(config: Config, event_tx: EventBroadcast) -> Result<()> {
+pub async fn run(
+    config: Config,
+    event_tx: EventBroadcast,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
+) -> Result<()> {
     let poll_secs = config.reliability.scheduler_poll_secs.max(MIN_POLL_SECONDS);
     let mut interval = time::interval(Duration::from_secs(poll_secs));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -86,7 +90,7 @@ pub async fn run(config: Config, event_tx: EventBroadcast) -> Result<()> {
     //    without the `max_tasks` limit so every missed job fires once.
     //    Controlled by `[scheduler] catch_up_on_startup` (default: true).
     if config.scheduler.catch_up_on_startup {
-        catch_up_overdue_jobs(&config, &event_tx).await;
+        catch_up_overdue_jobs(&config, &event_tx, &audit_logger).await;
     } else {
         ::zeroclaw_log::record!(
             INFO,
@@ -115,7 +119,7 @@ pub async fn run(config: Config, event_tx: EventBroadcast) -> Result<()> {
             }
         };
 
-        process_due_jobs(&config, jobs, SCHEDULER_COMPONENT, &event_tx).await;
+        process_due_jobs(&config, jobs, SCHEDULER_COMPONENT, &event_tx, &audit_logger).await;
     }
 }
 
@@ -145,7 +149,11 @@ fn resolve_owning_agent<'a>(config: &'a Config, job: &CronJob) -> Option<&'a str
 ///
 /// Called once at scheduler startup so that jobs missed during downtime
 /// (e.g. late boot, daemon restart) are caught up immediately.
-async fn catch_up_overdue_jobs(config: &Config, event_tx: &EventBroadcast) {
+async fn catch_up_overdue_jobs(
+    config: &Config,
+    event_tx: &EventBroadcast,
+    audit_logger: &Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
+) {
     let now = Utc::now();
     let jobs = match all_overdue_jobs(config, now) {
         Ok(jobs) => jobs,
@@ -177,7 +185,7 @@ async fn catch_up_overdue_jobs(config: &Config, event_tx: &EventBroadcast) {
         "Scheduler startup: catching up overdue jobs"
     );
 
-    process_due_jobs(config, jobs, SCHEDULER_COMPONENT, event_tx).await;
+    process_due_jobs(config, jobs, SCHEDULER_COMPONENT, event_tx, audit_logger).await;
 
     ::zeroclaw_log::record!(
         INFO,
@@ -186,7 +194,11 @@ async fn catch_up_overdue_jobs(config: &Config, event_tx: &EventBroadcast) {
     );
 }
 
-pub async fn execute_job_now(config: &Config, job: &CronJob) -> (bool, String) {
+pub async fn execute_job_now(
+    config: &Config,
+    job: &CronJob,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
+) -> (bool, String) {
     use zeroclaw_log::Instrument;
     let Some(agent_alias) = resolve_owning_agent(config, job) else {
         return (
@@ -198,14 +210,26 @@ pub async fn execute_job_now(config: &Config, job: &CronJob) -> (bool, String) {
         );
     };
     let agent_alias = agent_alias.to_string();
-    let security = match SecurityPolicy::for_agent(config, &agent_alias) {
+    let security = match SecurityPolicy::for_agent(
+        config,
+        &agent_alias,
+        audit_logger
+            .as_ref()
+            .map(|l| l.clone() as Arc<dyn zeroclaw_config::policy::AuditSink>),
+    ) {
         Ok(s) => s,
         Err(e) => return (false, format!("agent {agent_alias} risk profile: {e}")),
     };
     let span = zeroclaw_log::attribution_span!(job);
-    Box::pin(execute_job_with_retry(config, &security, &agent_alias, job))
-        .instrument(span)
-        .await
+    Box::pin(execute_job_with_retry(
+        config,
+        &security,
+        &agent_alias,
+        job,
+        audit_logger.clone(),
+    ))
+    .instrument(span)
+    .await
 }
 
 async fn execute_job_with_retry(
@@ -213,6 +237,7 @@ async fn execute_job_with_retry(
     security: &SecurityPolicy,
     agent_alias: &str,
     job: &CronJob,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 ) -> (bool, String) {
     let mut last_output = String::new();
     let retries = config.reliability.scheduler_retries;
@@ -221,7 +246,16 @@ async fn execute_job_with_retry(
     for attempt in 0..=retries {
         let (success, output) = match job.job_type {
             JobType::Shell => run_job_command(config, security, job).await,
-            JobType::Agent => Box::pin(run_agent_job(config, security, agent_alias, job)).await,
+            JobType::Agent => {
+                Box::pin(run_agent_job(
+                    config,
+                    security,
+                    agent_alias,
+                    job,
+                    audit_logger.as_ref().map(|l| l.clone()),
+                ))
+                .await
+            }
         };
         last_output = output;
 
@@ -249,6 +283,7 @@ async fn process_due_jobs(
     jobs: Vec<CronJob>,
     component: &str,
     event_tx: &EventBroadcast,
+    audit_logger: &Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 ) {
     // Refresh scheduler health on every successful poll cycle, including idle cycles.
     crate::health::mark_component_ok(component);
@@ -262,7 +297,13 @@ async fn process_due_jobs(
             return None;
         };
         let agent_alias = agent_alias.to_owned();
-        let security = match SecurityPolicy::for_agent(config, &agent_alias) {
+     let security = match SecurityPolicy::for_agent(
+        config,
+        &agent_alias,
+        audit_logger
+            .as_ref()
+            .map(|l| l.clone() as Arc<dyn zeroclaw_config::policy::AuditSink>),
+    ) {
             Ok(s) => Arc::new(s),
             Err(e) => {
                 ::zeroclaw_log::record!(WARN, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_outcome(::zeroclaw_log::EventOutcome::Unknown).with_attrs(::serde_json::json!({"job_id": job.id, "agent": agent_alias, "error": format!("{}", e)})), "Cron job: failed to build SecurityPolicy for owning agent");
@@ -278,6 +319,7 @@ async fn process_due_jobs(
                 &agent_alias,
                 &job,
                 &component,
+                audit_logger,
             ))
             .await
         })
@@ -313,15 +355,22 @@ async fn execute_and_persist_job(
     agent_alias: &str,
     job: &CronJob,
     component: &str,
+    audit_logger: &Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 ) -> (String, bool, String) {
     crate::health::mark_component_ok(component);
     warn_if_high_frequency_agent_job(job);
 
     let started_at = Utc::now();
     let span = zeroclaw_log::attribution_span!(job);
-    let (success, output) = Box::pin(execute_job_with_retry(config, security, agent_alias, job))
-        .instrument(span)
-        .await;
+    let (success, output) = Box::pin(execute_job_with_retry(
+        config,
+        security,
+        agent_alias,
+        job,
+        audit_logger.clone(),
+    ))
+    .instrument(span)
+    .await;
     let finished_at = Utc::now();
     let success = Box::pin(persist_job_result(
         config,
@@ -341,18 +390,23 @@ async fn run_agent_job(
     security: &SecurityPolicy,
     agent_alias: &str,
     job: &CronJob,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 ) -> (bool, String) {
     // Cron is one of two SubAgent spawn sites; the other is the
     // agent-loop `spawn_subagent` tool. Both funnel through
     // `SubAgentSpawn::for_agent` so permission inheritance, tracing
     // span shape, and audit attribution stay uniform across spawn
     // sites.
-    let subagent_ctx = match crate::subagent::SubAgentSpawn::for_agent(config, agent_alias)
-        .and_then(|spawn| spawn.build(crate::subagent::SubAgentOverrides::default()))
-    {
-        Ok(ctx) => ctx,
-        Err(e) => return (false, format!("subagent spawn failed: {e:#}")),
-    };
+    let audit_sink = audit_logger
+        .as_ref()
+        .map(|l| l.clone() as Arc<dyn zeroclaw_config::policy::AuditSink>);
+    let subagent_ctx =
+        match crate::subagent::SubAgentSpawn::for_agent(config, agent_alias, audit_sink)
+            .and_then(|spawn| spawn.build(crate::subagent::SubAgentOverrides::default()))
+        {
+            Ok(ctx) => ctx,
+            Err(e) => return (false, format!("subagent spawn failed: {e:#}")),
+        };
 
     if !security.can_act() {
         return (
@@ -474,6 +528,7 @@ async fn run_agent_job(
                     Some(session_path.clone()),
                     job.allowed_tools.clone(),
                     run_overrides,
+                    audit_logger.clone(),
                 )
                 .instrument(subagent_span),
             )
@@ -925,7 +980,8 @@ mod tests {
     }
 
     fn test_security(config: &Config) -> SecurityPolicy {
-        SecurityPolicy::for_agent(config, TEST_AGENT).expect("test-agent has resolvable profiles")
+        SecurityPolicy::for_agent(config, TEST_AGENT, None)
+            .expect("test-agent has resolvable profiles")
     }
 
     fn test_job(command: &str) -> CronJob {
@@ -1245,6 +1301,7 @@ mod tests {
             &security,
             "test-agent",
             &job,
+            None,
         ))
         .await;
         assert!(success);
@@ -1266,6 +1323,7 @@ mod tests {
             &security,
             "test-agent",
             &job,
+            None,
         ))
         .await;
         assert!(!success);
@@ -1282,7 +1340,7 @@ mod tests {
         let security = test_security(&config);
 
         let (success, output) =
-            Box::pin(run_agent_job(&config, &security, "test-agent", &job)).await;
+            Box::pin(run_agent_job(&config, &security, "test-agent", &job, None)).await;
         assert!(!success);
         assert!(output.contains("agent job failed:"));
     }
@@ -1302,7 +1360,7 @@ mod tests {
         let security = test_security(&config);
 
         let (success, output) =
-            Box::pin(run_agent_job(&config, &security, "test-agent", &job)).await;
+            Box::pin(run_agent_job(&config, &security, "test-agent", &job, None)).await;
         assert!(!success);
         assert!(output.contains("blocked by security policy"));
         assert!(output.contains("read-only"));
@@ -1323,7 +1381,7 @@ mod tests {
         let security = test_security(&config);
 
         let (success, output) =
-            Box::pin(run_agent_job(&config, &security, "test-agent", &job)).await;
+            Box::pin(run_agent_job(&config, &security, "test-agent", &job, None)).await;
         assert!(!success);
         assert!(output.contains("blocked by security policy"));
         assert!(output.contains("rate limit exceeded"));
@@ -1336,7 +1394,7 @@ mod tests {
         let component = unique_component("scheduler-idle");
 
         crate::health::mark_component_error(&component, "pre-existing error");
-        process_due_jobs(&config, Vec::new(), &component, &None).await;
+        process_due_jobs(&config, Vec::new(), &component, &None, &None).await;
 
         let snapshot = crate::health::snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
@@ -1353,7 +1411,7 @@ mod tests {
         let component = unique_component("scheduler-fail");
 
         crate::health::mark_component_ok(&component);
-        process_due_jobs(&config, vec![job], &component, &None).await;
+        process_due_jobs(&config, vec![job], &component, &None, &None).await;
 
         let snapshot = crate::health::snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
@@ -1877,7 +1935,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel::<serde_json::Value>(16);
         let event_tx: EventBroadcast = Some(tx);
 
-        process_due_jobs(&config, vec![job], &component, &event_tx).await;
+        process_due_jobs(&config, vec![job], &component, &event_tx, &None).await;
 
         let event = rx.try_recv().expect("should receive a broadcast event");
         assert_eq!(event["type"], "cron_result");
@@ -1903,7 +1961,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel::<serde_json::Value>(16);
         let event_tx: EventBroadcast = Some(tx);
 
-        process_due_jobs(&config, vec![job], &component, &event_tx).await;
+        process_due_jobs(&config, vec![job], &component, &event_tx, &None).await;
 
         let event = rx.try_recv().expect("should receive a broadcast event");
         assert_eq!(event["type"], "cron_result");
@@ -1920,7 +1978,7 @@ mod tests {
         let component = unique_component("broadcast-none");
 
         // event_tx = None — should complete without panic.
-        process_due_jobs(&config, vec![job], &component, &None).await;
+        process_due_jobs(&config, vec![job], &component, &None, &None).await;
     }
 
     #[tokio::test]
@@ -1935,7 +1993,7 @@ mod tests {
         // process_due_jobs must not panic when there are no subscribers.
         let event_tx: EventBroadcast = Some(tx);
 
-        process_due_jobs(&config, vec![job], &component, &event_tx).await;
+        process_due_jobs(&config, vec![job], &component, &event_tx, &None).await;
         // If we got here without panic, the test passes.
     }
 }

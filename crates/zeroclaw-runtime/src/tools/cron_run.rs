@@ -10,11 +10,20 @@ use zeroclaw_config::schema::Config;
 pub struct CronRunTool {
     config: Arc<Config>,
     security: Arc<SecurityPolicy>,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 }
 
 impl CronRunTool {
-    pub fn new(config: Arc<Config>, security: Arc<SecurityPolicy>) -> Self {
-        Self { config, security }
+    pub fn new(
+        config: Arc<Config>,
+        security: Arc<SecurityPolicy>,
+        audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
+    ) -> Self {
+        Self {
+            config,
+            security,
+            audit_logger,
+        }
     }
 }
 
@@ -115,8 +124,12 @@ impl Tool for CronRunTool {
         }
 
         let started_at = Utc::now();
-        let (mut success, output) =
-            Box::pin(cron::scheduler::execute_job_now(&self.config, &job)).await;
+        let (mut success, output) = Box::pin(cron::scheduler::execute_job_now(
+            &self.config,
+            &job,
+            self.audit_logger.clone(),
+        ))
+        .await;
         let finished_at = Utc::now();
         let duration_ms = (finished_at - started_at).num_milliseconds();
 
@@ -232,7 +245,8 @@ mod tests {
 
     fn test_security(cfg: &Config) -> Arc<SecurityPolicy> {
         Arc::new(
-            SecurityPolicy::for_agent(cfg, TEST_AGENT).expect("test-agent has resolvable profiles"),
+            SecurityPolicy::for_agent(cfg, TEST_AGENT, None)
+                .expect("test-agent has resolvable profiles"),
         )
     }
 
@@ -258,7 +272,7 @@ mod tests {
             .cron_jobs
             .push(job.id.clone());
         let cfg = Arc::new(config);
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg));
+        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), None);
 
         let result = tool.execute(json!({ "job_id": job.id })).await.unwrap();
         assert!(result.success, "{:?}", result.error);
@@ -271,7 +285,7 @@ mod tests {
     async fn errors_for_missing_job() {
         let tmp = TempDir::new().unwrap();
         let cfg = test_config(&tmp).await;
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg));
+        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), None);
 
         let result = tool
             .execute(json!({ "job_id": "missing-job-id" }))
@@ -298,7 +312,7 @@ mod tests {
             .or_default()
             .level = AutonomyLevel::ReadOnly;
         let cfg = Arc::new(config);
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg));
+        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), None);
 
         let result = tool.execute(json!({ "job_id": job.id })).await.unwrap();
         assert!(!result.success);
@@ -341,7 +355,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg));
+        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), None);
 
         // Without approval, the tool-level policy check blocks medium-risk commands.
         let denied = tool.execute(json!({ "job_id": job.id })).await.unwrap();
@@ -377,7 +391,7 @@ mod tests {
         seed_test_agent(&mut config);
         let cfg = Arc::new(config);
         let job = cron::add_job(&cfg, TEST_AGENT, "*/5 * * * *", "echo run-now").unwrap();
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg));
+        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), None);
 
         let result = tool.execute(json!({ "job_id": job.id })).await.unwrap();
         assert!(!result.success);

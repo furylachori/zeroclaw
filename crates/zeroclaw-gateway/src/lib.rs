@@ -439,6 +439,8 @@ pub struct AppState {
     /// need to be rebuilt to apply it." The dashboard polls
     /// `/api/config/reload-status` and surfaces a reload banner when true.
     pub pending_reload: Arc<std::sync::atomic::AtomicBool>,
+    /// Shared audit logger for tamper-evident event logging
+    pub audit_logger: Option<std::sync::Arc<zeroclaw_runtime::security::audit::AuditLogger>>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -453,6 +455,7 @@ pub async fn run_gateway(
     // re-init. Cross-platform replacement for the SIGUSR1 hack.
     reload_tx: Option<tokio::sync::watch::Sender<bool>>,
     canvas_store: Option<CanvasStore>,
+    audit_logger: Option<std::sync::Arc<zeroclaw_runtime::security::audit::AuditLogger>>,
 ) -> Result<()> {
     // ── Security: warn on public bind without tunnel or explicit opt-in ──
     if is_public_bind(host)
@@ -610,7 +613,7 @@ pub async fn run_gateway(
             return None;
         };
         let risk_profile = risk_profile.clone();
-        let security = match SecurityPolicy::for_agent(&config, agent_alias) {
+        let security = match SecurityPolicy::for_agent(&config, agent_alias, None) {
             Ok(s) => Arc::new(s),
             Err(e) => {
                 ::zeroclaw_log::record!(WARN, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_outcome(::zeroclaw_log::EventOutcome::Unknown).with_attrs(::serde_json::json!({"agent": agent_alias, "error": format!("{}", e), "agent_alias": agent_alias})), "Gateway: agent SecurityPolicy failed to build; booting with empty tools registry. Fix [agents.] via /admin/reload or /onboard.");
@@ -649,6 +652,7 @@ pub async fn run_gateway(
                 &config,
                 Some(canvas_store.clone()),
                 false,
+                None,
             );
             (tools_registry_raw, delegate_handle_gw)
         }
@@ -1226,6 +1230,7 @@ pub async fn run_gateway(
         canvas_store,
         cancel_tokens: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         pending_reload: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        audit_logger,
         #[cfg(feature = "webauthn")]
         webauthn: if config.security.webauthn.enabled {
             let secret_store = Arc::new(zeroclaw_runtime::security::SecretStore::new(
@@ -1962,7 +1967,7 @@ async fn run_gateway_chat_with_tools(
         let response = Box::pin(
             zeroclaw_runtime::agent::cost::TOOL_LOOP_COST_TRACKING_CONTEXT.scope(
                 cost_tracking_context,
-                zeroclaw_runtime::agent::process_message(config, &agent_alias, message, session_id),
+                 zeroclaw_runtime::agent::process_message(config, &agent_alias, message, session_id, None),
             ),
         )
         .await?;

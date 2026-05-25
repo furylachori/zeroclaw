@@ -109,6 +109,7 @@ pub struct DaemonSubsystems {
                     Config,
                     Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
                     Option<tokio::sync::watch::Sender<bool>>,
+                    Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
                 ) -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send>>
                 + Send
                 + Sync,
@@ -122,6 +123,7 @@ pub struct DaemonSubsystems {
             dyn Fn(
                     Config,
                     tokio_util::sync::CancellationToken,
+                    Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
                 ) -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send>>
                 + Send
                 + Sync,
@@ -137,8 +139,11 @@ pub struct DaemonSubsystems {
                 + Sync,
         >,
     >,
+    /// Shared audit logger instance (created by the binary, used by daemon components).
+    pub audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 }
 
+#[allow(clippy::collapsible_if)]
 pub async fn run(
     config: Config,
     host: String,
@@ -152,6 +157,31 @@ pub async fn run(
         .max(initial_backoff);
 
     crate::health::mark_component_ok("daemon");
+
+    if let Some(ref audit_logger) = subsystems.audit_logger {
+        if let Err(e) = audit_logger.log(
+            &crate::security::audit::AuditEvent::new(
+                crate::security::audit::AuditEventType::SecurityEvent,
+            )
+            .with_actor("system".to_string(), None, None)
+            .with_action(
+                "daemon_start".to_string(),
+                "system".to_string(),
+                false,
+                true,
+            )
+            .with_result(true, None, 0, None)
+            .with_security(None),
+        ) {
+            let err_msg = format!("Failed to write audit log: {e}");
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure),
+                 err_msg
+            );
+        }
+    }
 
     // Shared broadcast channel so all daemon components (gateway, cron,
     // heartbeat) can publish real-time events to dashboard clients.
@@ -173,6 +203,7 @@ pub async fn run(
         let gateway_host = host.clone();
         let gateway_event_tx = event_tx.clone();
         let gateway_reload_tx = reload_tx.clone();
+        let gateway_audit_logger = subsystems.audit_logger.clone();
         let gateway_start = std::sync::Arc::new(gateway_start);
         handles.push(spawn_component_supervisor(
             "gateway",
@@ -184,7 +215,8 @@ pub async fn run(
                 let tx = gateway_event_tx.clone();
                 let reload = gateway_reload_tx.clone();
                 let start = gateway_start.clone();
-                async move { start(host, port, cfg, Some(tx), Some(reload)).await }
+                let audit_logger = gateway_audit_logger.clone();
+                async move { start(host, port, cfg, Some(tx), Some(reload), audit_logger).await }
             },
         ));
     }
@@ -196,6 +228,7 @@ pub async fn run(
             let channels_cfg = config.clone();
             let channels_start = std::sync::Arc::new(channels_start);
             let cancel_for_supervisor = channels_cancel.clone();
+            let channels_audit_logger = subsystems.audit_logger.clone();
             handles.push(spawn_component_supervisor(
                 "channels",
                 initial_backoff,
@@ -204,7 +237,8 @@ pub async fn run(
                     let cfg = channels_cfg.clone();
                     let start = channels_start.clone();
                     let cancel = cancel_for_supervisor.clone();
-                    async move { start(cfg, cancel).await }
+                    let audit_logger = channels_audit_logger.clone();
+                    async move { start(cfg, cancel, audit_logger).await }
                 },
             ));
         } else {
@@ -261,13 +295,15 @@ pub async fn run(
 
     if config.heartbeat.enabled {
         let heartbeat_cfg = config.clone();
+        let heartbeat_audit_logger = subsystems.audit_logger.clone();
         handles.push(spawn_component_supervisor(
             "heartbeat",
             initial_backoff,
             max_backoff,
             move || {
                 let cfg = heartbeat_cfg.clone();
-                async move { Box::pin(run_heartbeat_worker(cfg)).await }
+                let audit_logger = heartbeat_audit_logger.clone();
+                async move { Box::pin(run_heartbeat_worker(cfg, audit_logger)).await }
             },
         ));
     }
@@ -275,15 +311,17 @@ pub async fn run(
     if config.scheduler.enabled {
         let scheduler_cfg = config.clone();
         let scheduler_event_tx = event_tx.clone();
+        let scheduler_audit_logger = subsystems.audit_logger.clone();
         handles.push(spawn_component_supervisor(
             "scheduler",
             initial_backoff,
             max_backoff,
             move || {
-                let cfg = scheduler_cfg.clone();
-                let tx = scheduler_event_tx.clone();
-                async move { Box::pin(crate::cron::scheduler::run(cfg, Some(tx))).await }
-            },
+                    let cfg = scheduler_cfg.clone();
+                    let tx = scheduler_event_tx.clone();
+                    let audit_logger = scheduler_audit_logger.clone();
+                    async move { Box::pin(crate::cron::scheduler::run(cfg, Some(tx), audit_logger)).await }
+                },
         ));
     } else {
         crate::health::mark_component_ok("scheduler");
@@ -413,7 +451,10 @@ where
     })
 }
 
-async fn run_heartbeat_worker(config: Config) -> Result<()> {
+async fn run_heartbeat_worker(
+    config: Config,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
+) -> Result<()> {
     use crate::heartbeat::engine::{
         HeartbeatEngine, HeartbeatTask, TaskPriority, TaskStatus, compute_adaptive_interval,
     };
@@ -562,6 +603,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                 None,
                 None,
                 crate::agent::loop_::AgentRunOverrides::default(),
+                audit_logger.clone(),
             ));
             let phase1_result = if config.heartbeat.task_timeout_secs > 0 {
                 match tokio::time::timeout(
@@ -710,6 +752,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                 None,
                 None,
                 crate::agent::loop_::AgentRunOverrides::default(),
+                audit_logger.clone(),
             ));
             let phase2_result = if config.heartbeat.task_timeout_secs > 0 {
                 match tokio::time::timeout(

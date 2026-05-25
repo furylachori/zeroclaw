@@ -1,10 +1,21 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 // Re-export from zeroclaw-config.
 pub use crate::autonomy::AutonomyLevel;
+
+/// Trait for audit log sinks. Implemented by the runtime's `AuditLogger`.
+///
+/// Defined in `zeroclaw-config` to avoid a circular dependency:
+/// `zeroclaw-runtime` depends on `zeroclaw-config`, so `zeroclaw-config`
+/// cannot reference `AuditLogger` directly. The runtime implements this
+/// trait for its `AuditLogger` type.
+pub trait AuditSink: Send + Sync + std::fmt::Debug {
+    fn log_policy_violation(&self, action: &str, reason: &str);
+}
 
 /// Risk score for shell command execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,6 +258,9 @@ pub struct SecurityPolicy {
     /// resolves to `"firejail"`.
     pub firejail_args: Vec<String>,
     pub tracker: PerSenderTracker,
+    /// Optional audit logger for policy violation events.
+    /// `None` means audit logging is disabled for this policy instance.
+    pub audit_logger: Option<Arc<dyn AuditSink>>,
 }
 
 impl SecurityPolicy {
@@ -551,6 +565,7 @@ impl Default for SecurityPolicy {
             sandbox_backend: None,
             firejail_args: vec![],
             tracker: PerSenderTracker::new(),
+            audit_logger: None,
         }
     }
 }
@@ -1957,7 +1972,16 @@ impl SecurityPolicy {
 
     /// Check if autonomy level permits any action at all
     pub fn can_act(&self) -> bool {
-        self.autonomy != AutonomyLevel::ReadOnly
+        let result = self.autonomy != AutonomyLevel::ReadOnly;
+        if !result
+            && let Some(logger) = self.audit_logger.as_ref()
+        {
+            logger.log_policy_violation(
+                "can_act",
+                "denied by security policy: autonomy is read-only",
+            );
+        }
+        result
     }
 
     // ── Tool Operation Gating ──────────────────────────────────────────────
@@ -1984,6 +2008,12 @@ impl SecurityPolicy {
                 }
 
                 if !self.record_action() {
+                    if let Some(logger) = self.audit_logger.as_ref() {
+                        logger.log_policy_violation(
+                            "enforce_tool_operation",
+                            &format!("rate limit exceeded for '{operation_name}'"),
+                        );
+                    }
                     return Err("Rate limit exceeded: action budget exhausted".to_string());
                 }
 
@@ -2000,8 +2030,18 @@ impl SecurityPolicy {
 
     /// Check if the current sender would be rate-limited without recording.
     pub fn is_rate_limited(&self) -> bool {
-        self.tracker
-            .is_limited_for_current(self.max_actions_per_hour)
+        let result = self
+            .tracker
+            .is_limited_for_current(self.max_actions_per_hour);
+        if result
+            && let Some(logger) = self.audit_logger.as_ref()
+        {
+            logger.log_policy_violation(
+                "is_rate_limited",
+                "denied by security policy: rate limit exceeded",
+            );
+        }
+        result
     }
 
     /// Resolve a user-provided path for tool use.
@@ -2215,7 +2255,7 @@ impl SecurityPolicy {
         risk_profile: &crate::schema::RiskProfileConfig,
         workspace_dir: &Path,
     ) -> Self {
-        Self::from_profiles(risk_profile, None, workspace_dir)
+        Self::from_profiles(risk_profile, None, workspace_dir, None)
     }
 
     /// Build a `SecurityPolicy` from a resolved risk + runtime profile pair.
@@ -2229,6 +2269,7 @@ impl SecurityPolicy {
         risk_profile: &crate::schema::RiskProfileConfig,
         runtime_profile: Option<&crate::schema::RuntimeProfileConfig>,
         workspace_dir: &Path,
+        audit_logger: Option<Arc<dyn AuditSink>>,
     ) -> Self {
         // When autonomy is Full, disable workspace_only so the agent can
         // access paths outside the workspace. Forbidden-path checks still
@@ -2291,6 +2332,7 @@ impl SecurityPolicy {
             sandbox_backend: risk_profile.sandbox_backend.clone(),
             firejail_args: risk_profile.firejail_args.clone(),
             tracker: PerSenderTracker::new(),
+            audit_logger,
         }
     }
 
@@ -2301,7 +2343,11 @@ impl SecurityPolicy {
     /// `runtime_profile` falls back to zero budgets (treated as "inherit /
     /// no enforcement"), matching the previous default when the budget
     /// fields lived on the risk profile.
-    pub fn for_agent(config: &crate::schema::Config, agent_alias: &str) -> anyhow::Result<Self> {
+    pub fn for_agent(
+        config: &crate::schema::Config,
+        agent_alias: &str,
+        audit_logger: Option<Arc<dyn AuditSink>>,
+    ) -> anyhow::Result<Self> {
         let risk_profile = config.risk_profile_for_agent(agent_alias).ok_or_else(|| {
             ::zeroclaw_log::record!(
                 ERROR,
@@ -2319,7 +2365,12 @@ impl SecurityPolicy {
         // file_read/write/edit and the shell tool jail to the agent's
         // own dir, not the install-wide legacy path.
         let agent_workspace = config.agent_workspace_dir(agent_alias);
-        let mut policy = Self::from_profiles(risk_profile, runtime_profile, &agent_workspace);
+        let mut policy = Self::from_profiles(
+            risk_profile,
+            runtime_profile,
+            &agent_workspace,
+            audit_logger,
+        );
 
         // Shared skills directory: every agent reads from
         // `<install>/shared/skills/` so the `read_skills` tool resolves
@@ -2557,7 +2608,7 @@ mod tests {
             firejail_args: vec!["--net=none".into()],
         };
 
-        let policy = SecurityPolicy::from_profiles(&rp, None, Path::new("/ws"));
+        let policy = SecurityPolicy::from_profiles(&rp, None, Path::new("/ws"), None);
 
         assert_eq!(policy.autonomy, AutonomyLevel::ReadOnly, "level → autonomy");
         assert!(policy.workspace_only, "workspace_only");
@@ -2621,7 +2672,7 @@ mod tests {
             ..RiskProfileConfig::default()
         };
 
-        let policy = SecurityPolicy::from_profiles(&rp, None, Path::new("/ws"));
+        let policy = SecurityPolicy::from_profiles(&rp, None, Path::new("/ws"), None);
         assert!(
             !policy.workspace_only,
             "Full autonomy must drop workspace_only even when the profile sets it true"
@@ -3121,7 +3172,7 @@ mod tests {
             ..crate::schema::RuntimeProfileConfig::default()
         };
         let workspace = PathBuf::from("/tmp/test-workspace");
-        let policy = SecurityPolicy::from_profiles(&risk, Some(&runtime), &workspace);
+         let policy = SecurityPolicy::from_profiles(&risk, Some(&runtime), &workspace, None);
 
         assert_eq!(policy.autonomy, AutonomyLevel::Full);
         assert!(!policy.workspace_only);
@@ -4094,7 +4145,7 @@ mod tests {
             .insert(AgentAlias::from("readonly_sibling"), AccessMode::Read);
         cfg.agents.insert("test_agent".into(), test_agent);
 
-        let policy = SecurityPolicy::for_agent(&cfg, "test_agent").unwrap();
+        let policy = SecurityPolicy::for_agent(&cfg, "test_agent", None).unwrap();
 
         let writable_sibling_dir = cfg.agent_workspace_dir("writable_sibling");
         let readonly_sibling_dir = cfg.agent_workspace_dir("readonly_sibling");
@@ -4186,7 +4237,7 @@ mod tests {
         test_agent.workspace.unrestricted_filesystem = true;
         cfg.agents.insert("test_agent".into(), test_agent);
 
-        let policy = SecurityPolicy::for_agent(&cfg, "test_agent").unwrap();
+        let policy = SecurityPolicy::for_agent(&cfg, "test_agent", None).unwrap();
 
         assert!(
             !policy.workspace_only,
@@ -4213,7 +4264,7 @@ mod tests {
             ..crate::schema::RuntimeProfileConfig::default()
         };
         let workspace = PathBuf::from("/tmp/test");
-        let policy = SecurityPolicy::from_profiles(&risk, Some(&runtime), &workspace);
+         let policy = SecurityPolicy::from_profiles(&risk, Some(&runtime), &workspace, None);
         assert!(!policy.is_rate_limited());
     }
 

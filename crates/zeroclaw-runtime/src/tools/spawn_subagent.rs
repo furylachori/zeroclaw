@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use zeroclaw_api::tool::{Tool, ToolResult};
+use zeroclaw_config::policy::AuditSink;
 use zeroclaw_config::schema::Config;
 use zeroclaw_log::scope;
 
@@ -25,14 +26,20 @@ pub struct SpawnSubagentTool {
     /// any spawn work happens. Set by the agent loop from
     /// `AgentRunOverrides.is_subagent` at registry construction time.
     is_subagent_caller: bool,
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 }
 
 impl SpawnSubagentTool {
-    pub fn new(config: Arc<Config>, parent_alias: impl Into<String>) -> Self {
+    pub fn new(
+        config: Arc<Config>,
+        parent_alias: impl Into<String>,
+        audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
+    ) -> Self {
         Self {
             config,
             parent_alias: parent_alias.into(),
             is_subagent_caller: false,
+            audit_logger,
         }
     }
 
@@ -135,18 +142,23 @@ impl Tool for SpawnSubagentTool {
             }
         };
 
-        let subagent_ctx = match SubAgentSpawn::for_agent(&self.config, &self.parent_alias)
-            .and_then(|spawn| spawn.build(SubAgentOverrides::default()))
-        {
-            Ok(ctx) => ctx,
-            Err(e) => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("subagent spawn failed: {e:#}")),
-                });
-            }
-        };
+        let audit_sink = self
+            .audit_logger
+            .as_ref()
+            .map(|l| l.clone() as Arc<dyn AuditSink>);
+        let subagent_ctx =
+            match SubAgentSpawn::for_agent(&self.config, &self.parent_alias, audit_sink)
+                .and_then(|spawn| spawn.build(SubAgentOverrides::default()))
+            {
+                Ok(ctx) => ctx,
+                Err(e) => {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("subagent spawn failed: {e:#}")),
+                    });
+                }
+            };
 
         let run_id = uuid::Uuid::new_v4().to_string();
 
@@ -183,6 +195,7 @@ impl Tool for SpawnSubagentTool {
                 Some(session_path),
                 None,
                 run_overrides,
+                self.audit_logger.clone(),
             )
         ))
         .await;
@@ -228,7 +241,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_or_missing_prompt_is_rejected() {
-        let tool = SpawnSubagentTool::new(Arc::new(config_with_agent("alpha")), "alpha");
+        let tool = SpawnSubagentTool::new(Arc::new(config_with_agent("alpha")), "alpha", None);
         for args in [json!({}), json!({ "prompt": "   " })] {
             let result = tool
                 .execute(args)
@@ -252,7 +265,7 @@ mod tests {
         // Parent alias that is not configured: SubAgentSpawn::for_agent
         // returns Err, the tool reports a structured spawn failure
         // (no panic, no recursion attempt).
-        let tool = SpawnSubagentTool::new(Arc::new(Config::default()), "missing-alpha");
+        let tool = SpawnSubagentTool::new(Arc::new(Config::default()), "missing-alpha", None);
         let result = tool
             .execute(json!({ "prompt": "hello" }))
             .await
@@ -273,7 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_recursive_spawn_when_caller_is_subagent() {
-        let tool = SpawnSubagentTool::new(Arc::new(config_with_agent("alpha")), "alpha")
+        let tool = SpawnSubagentTool::new(Arc::new(config_with_agent("alpha")), "alpha", None)
             .with_subagent_caller(true);
         let result = tool
             .execute(json!({ "prompt": "hello" }))
@@ -293,7 +306,7 @@ mod tests {
         // (e.g. no model provider configured in this minimal harness),
         // but it MUST NOT trip the depth-cap refusal. Pin that the
         // depth-cap error is absent.
-        let tool = SpawnSubagentTool::new(Arc::new(config_with_agent("alpha")), "alpha")
+        let tool = SpawnSubagentTool::new(Arc::new(config_with_agent("alpha")), "alpha", None)
             .with_subagent_caller(false);
         let result = tool
             .execute(json!({ "prompt": "hello" }))
@@ -333,7 +346,7 @@ mod tests {
         // the tool itself refuses pre-spawn so the dispatch-site filter
         // doesn't have to be the only line of defense.
         let config = config_with_allowed_tools("alpha", vec!["shell".into()]);
-        let tool = SpawnSubagentTool::new(Arc::new(config), "alpha");
+        let tool = SpawnSubagentTool::new(Arc::new(config), "alpha", None);
         let result = tool
             .execute(json!({ "prompt": "hello" }))
             .await
@@ -354,7 +367,7 @@ mod tests {
         // the gate refusal is absent.
         let config =
             config_with_allowed_tools("alpha", vec!["spawn_subagent".into(), "shell".into()]);
-        let tool = SpawnSubagentTool::new(Arc::new(config), "alpha");
+        let tool = SpawnSubagentTool::new(Arc::new(config), "alpha", None);
         let result = tool
             .execute(json!({ "prompt": "hello" }))
             .await
@@ -402,6 +415,7 @@ mod tests {
         let tool: Box<dyn Tool> = Box::new(SpawnSubagentTool::new(
             Arc::new(config_with_agent("alpha")),
             "alpha",
+            None,
         ));
         assert_eq!(
             Attributable::role(tool.as_ref()),

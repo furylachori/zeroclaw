@@ -104,6 +104,8 @@ pub struct DelegateTool {
     /// unset (legacy unit-test constructors), DelegateTool falls back
     /// to using `self.security` for the spawned inner DelegateTool.
     root_config: Option<Arc<Config>>,
+    /// Audit logger for security event logging.
+    audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 }
 
 impl DelegateTool {
@@ -143,6 +145,7 @@ impl DelegateTool {
             runtime_profiles: Arc::new(HashMap::new()),
             skill_bundles: Arc::new(HashMap::new()),
             root_config: None,
+            audit_logger: None,
         }
     }
 
@@ -188,6 +191,7 @@ impl DelegateTool {
             runtime_profiles: Arc::new(HashMap::new()),
             skill_bundles: Arc::new(HashMap::new()),
             root_config: None,
+            audit_logger: None,
         }
     }
 
@@ -289,6 +293,15 @@ impl DelegateTool {
         self
     }
 
+    /// Attach audit logger for security event logging.
+    pub fn with_audit_logger(
+        mut self,
+        audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
+    ) -> Self {
+        self.audit_logger = audit_logger;
+        self
+    }
+
     /// Build a `SecurityPolicy` for the delegated target agent
     /// validated as **mutually equivalent** to the caller's policy
     /// (neither escalates nor narrows), with the caller's action /
@@ -322,21 +335,26 @@ impl DelegateTool {
         let Some(config) = self.root_config.as_ref() else {
             return Ok(Arc::clone(&self.security));
         };
-        let mut target_policy = SecurityPolicy::for_agent(config, target_alias).map_err(|e| {
-            ::zeroclaw_log::record!(
-                WARN,
-                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
-                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
-                    .with_attrs(::serde_json::json!({
-                        "target_agent": target_alias,
-                        "error": format!("{}", e),
-                    })),
-                "delegate: could not resolve target's security policy"
-            );
-            anyhow::Error::msg(format!(
-                "could not resolve security policy for delegate target {target_alias:?}: {e}"
-            ))
-        })?;
+        let audit_sink = self
+            .audit_logger
+            .as_ref()
+            .map(|l| l.clone() as Arc<dyn zeroclaw_config::policy::AuditSink>);
+        let mut target_policy = SecurityPolicy::for_agent(config, target_alias, audit_sink)
+            .map_err(|e| {
+                ::zeroclaw_log::record!(
+                    WARN,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                        .with_attrs(::serde_json::json!({
+                            "target_agent": target_alias,
+                            "error": format!("{}", e),
+                        })),
+                    "delegate: could not resolve target's security policy"
+                );
+                anyhow::Error::msg(format!(
+                    "could not resolve security policy for delegate target {target_alias:?}: {e}"
+                ))
+            })?;
         target_policy
             .ensure_no_escalation_beyond(&self.security)
             .map_err(|violation| {
@@ -956,6 +974,7 @@ impl DelegateTool {
         let runtime_profiles = Arc::clone(&self.runtime_profiles);
         let skill_bundles = Arc::clone(&self.skill_bundles);
         let root_config = self.root_config.clone();
+        let audit_logger = self.audit_logger.clone();
         // Capture the parent loop's session-key task-local so the
         // detached background task scopes its tool calls under the
         // same key — channel tools (sessions_send, etc.) need the
@@ -983,6 +1002,7 @@ impl DelegateTool {
                     runtime_profiles,
                     skill_bundles,
                     root_config,
+                    audit_logger,
                 };
 
                 let args_inner = json!({
@@ -1179,6 +1199,7 @@ impl DelegateTool {
             let receipt_scope = parent_receipt_scope.clone();
             let root_config = self.root_config.clone();
             let session_key = parent_session_key.clone();
+            let audit_logger = self.audit_logger.clone();
 
             handles.push(tokio::spawn(async move {
                 let inner = DelegateTool {
@@ -1198,6 +1219,7 @@ impl DelegateTool {
                     runtime_profiles,
                     skill_bundles,
                     root_config,
+                    audit_logger,
                 };
                 let agent_name_for_return = agent_name.clone();
                 let result = scope_delegate_session_key(session_key, async move {
@@ -1646,6 +1668,7 @@ impl DelegateTool {
                 None, // channel: delegate subagents don't support approval
                 receipt_generator,
                 collected_receipts,
+                self.audit_logger.clone(),
             ),
         )
         .await;
@@ -3466,8 +3489,9 @@ mod tests {
     #[tokio::test]
     async fn delegate_rejects_target_whose_policy_escalates_caller() {
         let config = config_with_two_agents("caller", 5, "target", 50);
-        let caller_policy =
-            Arc::new(SecurityPolicy::for_agent(&config, "caller").expect("caller policy resolves"));
+        let caller_policy = Arc::new(
+            SecurityPolicy::for_agent(&config, "caller", None).expect("caller policy resolves"),
+        );
         let mut delegate_agents = HashMap::new();
         for (name, agent) in &config.agents {
             delegate_agents.insert(name.clone(), agent.clone());
@@ -3488,8 +3512,9 @@ mod tests {
     #[tokio::test]
     async fn delegate_target_inherits_caller_action_tracker() {
         let config = config_with_two_agents("caller", 5, "target", 5);
-        let caller_policy =
-            Arc::new(SecurityPolicy::for_agent(&config, "caller").expect("caller policy resolves"));
+        let caller_policy = Arc::new(
+            SecurityPolicy::for_agent(&config, "caller", None).expect("caller policy resolves"),
+        );
         let mut delegate_agents = HashMap::new();
         for (name, agent) in &config.agents {
             delegate_agents.insert(name.clone(), agent.clone());
@@ -3574,8 +3599,9 @@ mod tests {
         // must catch the narrowing at the delegate boundary and
         // refuse to dispatch.
         let config = config_with_narrowed_target();
-        let caller_policy =
-            Arc::new(SecurityPolicy::for_agent(&config, "caller").expect("caller policy resolves"));
+        let caller_policy = Arc::new(
+            SecurityPolicy::for_agent(&config, "caller", None).expect("caller policy resolves"),
+        );
         let mut delegate_agents = HashMap::new();
         for (name, agent) in &config.agents {
             delegate_agents.insert(name.clone(), agent.clone());
