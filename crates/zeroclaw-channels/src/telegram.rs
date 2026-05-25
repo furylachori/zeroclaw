@@ -421,14 +421,6 @@ pub struct TelegramChannel {
     /// tool approval prompt before auto-denying. Configurable via
     /// `channels.telegram.approval_timeout_secs`. Default: 120.
     approval_timeout_secs: u64,
-    /// When `true`, audio/voice messages are downloaded and saved to disk even
-    /// when transcription is disabled. When `false` (default), audio is skipped
-    /// if transcription is not configured. Requires workspace to be set.
-    process_audio_without_transcription: bool,
-    /// When `true`, transcribed audio files are saved to the workspace directory
-    /// alongside the transcript. When `false` (default), audio is held in memory
-    /// only and not persisted to disk.
-    save_transcribed_audio: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -485,8 +477,6 @@ impl TelegramChannel {
             tool_command_specs: Vec::new(),
             pending_approvals: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             approval_timeout_secs: 120,
-            process_audio_without_transcription: false,
-            save_transcribed_audio: false,
         }
     }
 
@@ -497,17 +487,6 @@ impl TelegramChannel {
     }
 
     /// Set whether to download audio messages even when transcription is disabled.
-    pub fn with_process_audio_without_transcription(mut self, val: bool) -> Self {
-        self.process_audio_without_transcription = val;
-        self
-    }
-
-    /// Set whether to save transcribed audio files to disk alongside transcripts.
-    pub fn with_save_transcribed_audio(mut self, val: bool) -> Self {
-        self.save_transcribed_audio = val;
-        self
-    }
-
     /// Configure whether Telegram-native acknowledgement reactions are sent.
     pub fn with_ack_reactions(mut self, enabled: bool) -> Self {
         self.ack_reactions = enabled;
