@@ -64,64 +64,43 @@ daemon/agent runtime where the logger is available.
 
 ## Git Workflow
 
-This fork uses a **rebase workflow** to stay current with upstream.
+Simple: work on `master` directly, rebase from upstream before every work session.
+No feature branches unless you have two things in progress at the same time.
 
 ### Remote setup
 
 ```bash
-# origin = your fork
-git remote add origin https://github.com/furylachori/zeroclaw.git
-
-# upstream = zeroclaw-labs
 git remote add upstream https://github.com/zeroclaw-labs/zeroclaw.git
-git remote -v   # verify
+git remote -v   # origin should point to your fork
 ```
 
-### Daily workflow
+### Before every work session
 
 ```bash
-# 1. Sync from upstream
 git fetch upstream
 git rebase upstream/master
+```
 
-# 2. Work on your feature branch (keep master clean)
-git checkout master
+That's it. Your `master` becomes a fast-forward of upstream + your local commits.
+Commit and push as normal. No branch juggling needed.
+
+### Concurrent work (optional)
+
+If you have two features in progress simultaneously, use a feature branch for one:
+
+```bash
 git checkout -b feat/my-feature
-
-# 3. Commit and push to your fork
-git add .
-git commit -m "feat: description"
-git push furylachori feat/my-feature
-
-# 4. When upstream has new commits, rebase before continuing
-git fetch upstream
-git rebase upstream/master
-git push furylachori feat/my-feature --force-with-lease
+# ... work, commit ...
+git push origin feat/my-feature
 ```
 
-### Sync `master` to upstream
-
-```bash
-git checkout master
-git fetch upstream
-git rebase upstream/master
-git push furylachori master --force-with-lease
-```
-
-### Branch naming
-
-```
-feat/audio-auto-download    ← this fork's audio feature
-feat/audit-logger          ← this fork's audit feature
-feat/<description>          ← future features
-```
+When the feature is done, rebase it on the latest `master` and merge or squash-merge.
 
 ### What NOT to do
 
-- **Do not `git merge` upstream into your branch.** Use rebase to keep history linear.
-- **Do not commit directly to `master`.** Always work on a feature branch.
-- **Do not `git push --force` to shared branches** (only to your own feature branches).
-- **Do not skip the build check.** Run `cargo check` before every push.
+- **Do not `git merge` upstream into your branch.** Always rebase.
+- **Do not skip the pre-session rebase.** Small conflicts every few days are better than one big merge headache.
+- **Do not `git push --force` to shared branches** (only to your own local branches).
 
 ---
 
