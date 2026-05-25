@@ -221,3 +221,4 @@ Dev-operational contracts — files consumed by AI coding skills and development
 - `@docs/book/src/developing/extension-examples.md` — adding providers, channels, tools, peripherals; tool shared-state contract; architecture boundary rules
 - `@docs/book/src/contributing/privacy.md` — privacy rules and neutral-placeholder palette
 - `@docs/book/src/maintainers/superseding.md` — superseded-PR attribution, PR/commit templates, handoff template
+- `@FORK.md` — Fork-specific changes, git workflow, and upstream sync checklist
