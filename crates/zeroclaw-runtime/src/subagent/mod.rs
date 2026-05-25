@@ -112,7 +112,7 @@ impl SubAgentSpawn {
             .get(agent_alias)
             .with_context(|| format!("no agent configured under alias {agent_alias:?}"))?;
 
-        let parent_policy = SecurityPolicy::for_agent(config, agent_alias)
+        let parent_policy = SecurityPolicy::for_agent(config, agent_alias, None)
             .map(Arc::new)
             .with_context(|| {
                 format!("could not resolve security policy for agent {agent_alias:?}")

@@ -224,6 +224,7 @@ pub struct AuditLogger {
     config: AuditConfig,
     #[allow(dead_code)] // WIP: buffered writes for batch flushing
     buffer: Mutex<Vec<AuditEvent>>,
+    write_mutex: parking_lot::Mutex<()>,
     chain: Mutex<ChainState>,
     /// Signing key (loaded once at construction time if sign_events enabled)
     signing_key: Option<Vec<u8>>,
@@ -285,11 +286,21 @@ impl AuditLogger {
         };
 
         let log_path = zeroclaw_dir.join(&config.log_path);
+
+        if log_path.exists() {
+            let canonical_dir = std::fs::canonicalize(&zeroclaw_dir)?;
+            let canonical_log = std::fs::canonicalize(&log_path)?;
+            if !canonical_log.starts_with(&canonical_dir) {
+                anyhow::bail!("audit log path outside zeroclaw directory");
+            }
+        }
+
         let chain_state = recover_chain_state(&log_path);
         Ok(Self {
             log_path,
             config,
             buffer: Mutex::new(Vec::new()),
+            write_mutex: parking_lot::Mutex::new(()),
             chain: Mutex::new(chain_state),
             signing_key,
         })
@@ -324,6 +335,8 @@ impl AuditLogger {
             return Ok(());
         }
 
+        let _write_guard = self.write_mutex.lock();
+
         // Check log size and rotate if needed
         self.rotate_if_needed()?;
 
@@ -344,13 +357,25 @@ impl AuditLogger {
 
         // Serialize and write
         let line = serde_json::to_string(&chained)?;
+
+        if self.log_path.exists() {
+            if let Ok(meta) = std::fs::symlink_metadata(&self.log_path) {
+                if meta.file_type().is_symlink() {
+                    anyhow::bail!("audit log is a symlink — refusing to write");
+                }
+            }
+        }
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.log_path)?;
 
         writeln!(file, "{}", line)?;
-        file.sync_all()?;
+        match self.config.sync_mode.as_str() {
+            "none" => {}
+            _ => { file.sync_all()?; }
+        }
 
         Ok(())
     }

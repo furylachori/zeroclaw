@@ -322,7 +322,7 @@ impl DelegateTool {
         let Some(config) = self.root_config.as_ref() else {
             return Ok(Arc::clone(&self.security));
         };
-        let mut target_policy = SecurityPolicy::for_agent(config, target_alias).map_err(|e| {
+        let mut target_policy = SecurityPolicy::for_agent(config, target_alias, None).map_err(|e| {
             ::zeroclaw_log::record!(
                 WARN,
                 ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
@@ -1657,6 +1657,7 @@ impl DelegateTool {
                 None, // channel: delegate subagents don't support approval
                 receipt_generator,
                 collected_receipts,
+                None, // audit_logger
             ),
         )
         .await;
@@ -3576,7 +3577,7 @@ mod tests {
     async fn delegate_rejects_target_whose_policy_escalates_caller() {
         let config = config_with_two_agents("caller", 5, "target", 50);
         let caller_policy =
-            Arc::new(SecurityPolicy::for_agent(&config, "caller").expect("caller policy resolves"));
+            Arc::new(SecurityPolicy::for_agent(&config, "caller", None).expect("caller policy resolves"));
         let mut delegate_agents = HashMap::new();
         for (name, agent) in &config.agents {
             delegate_agents.insert(name.clone(), agent.clone());
@@ -3598,7 +3599,7 @@ mod tests {
     async fn delegate_target_inherits_caller_action_tracker() {
         let config = config_with_two_agents("caller", 5, "target", 5);
         let caller_policy =
-            Arc::new(SecurityPolicy::for_agent(&config, "caller").expect("caller policy resolves"));
+            Arc::new(SecurityPolicy::for_agent(&config, "caller", None).expect("caller policy resolves"));
         let mut delegate_agents = HashMap::new();
         for (name, agent) in &config.agents {
             delegate_agents.insert(name.clone(), agent.clone());
@@ -3684,7 +3685,7 @@ mod tests {
         // refuse to dispatch.
         let config = config_with_narrowed_target();
         let caller_policy =
-            Arc::new(SecurityPolicy::for_agent(&config, "caller").expect("caller policy resolves"));
+            Arc::new(SecurityPolicy::for_agent(&config, "caller", None).expect("caller policy resolves"));
         let mut delegate_agents = HashMap::new();
         for (name, agent) in &config.agents {
             delegate_agents.insert(name.clone(), agent.clone());

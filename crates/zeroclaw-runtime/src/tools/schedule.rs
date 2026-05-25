@@ -563,7 +563,7 @@ mod tests {
             zeroclaw_config::schema::RuntimeProfileConfig::default(),
         );
         tokio::fs::create_dir_all(&config.data_dir).await.unwrap();
-        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT).unwrap());
+        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT, None).unwrap());
         (tmp, config, security)
     }
 
@@ -717,7 +717,7 @@ mod tests {
             zeroclaw_config::schema::RuntimeProfileConfig::default(),
         );
         tokio::fs::create_dir_all(&config.data_dir).await.unwrap();
-        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT).unwrap());
+        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT, None).unwrap());
 
         let tool = ScheduleTool::new(security, config, TEST_AGENT);
 
@@ -752,7 +752,7 @@ mod tests {
             },
         );
         tokio::fs::create_dir_all(&config.data_dir).await.unwrap();
-        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT).unwrap());
+        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT, None).unwrap());
         let tool = ScheduleTool::new(security, config, TEST_AGENT);
 
         let blocked = tool
@@ -793,7 +793,7 @@ mod tests {
             },
         );
         tokio::fs::create_dir_all(&config.data_dir).await.unwrap();
-        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT).unwrap());
+        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT, None).unwrap());
         let tool = ScheduleTool::new(security, config, TEST_AGENT);
 
         let create = tool
@@ -849,7 +849,7 @@ mod tests {
         config.scheduler.enabled = false;
         seed_test_agent_provider_and_agent(&mut config);
         std::fs::create_dir_all(&config.data_dir).unwrap();
-        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT).unwrap());
+        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT, None).unwrap());
         let tool = ScheduleTool::new(security, config, TEST_AGENT);
 
         let create = tool
@@ -891,7 +891,7 @@ mod tests {
             .allowed_commands = vec!["echo".into()];
         seed_test_agent_provider_and_agent(&mut config);
         std::fs::create_dir_all(&config.data_dir).unwrap();
-        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT).unwrap());
+        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT, None).unwrap());
         let tool = ScheduleTool::new(security, config, TEST_AGENT);
 
         let result = tool
@@ -933,7 +933,7 @@ mod tests {
             .allowed_commands = vec!["touch".into()];
         seed_test_agent_provider_and_agent(&mut config);
         std::fs::create_dir_all(&config.data_dir).unwrap();
-        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT).unwrap());
+        let security = Arc::new(SecurityPolicy::for_agent(&config, TEST_AGENT, None).unwrap());
         let tool = ScheduleTool::new(security, config, TEST_AGENT);
 
         let denied = tool

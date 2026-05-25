@@ -137,6 +137,8 @@ pub struct DaemonSubsystems {
                 + Sync,
         >,
     >,
+    /// Pre-instantiated audit logger, shared across daemon lifetime.
+    pub audit_logger: Option<std::sync::Arc<crate::security::audit::AuditLogger>>,
 }
 
 pub async fn run(
@@ -1284,6 +1286,8 @@ mod tests {
                 proxy_url: None,
                 approval_timeout_secs: 120,
                 excluded_tools: vec![],
+                process_audio_without_transcription: false,
+                save_transcribed_audio: false,
             },
         );
         assert!(has_supervised_channels(&config));
@@ -1455,6 +1459,8 @@ mod tests {
                 proxy_url: None,
                 approval_timeout_secs: 120,
                 excluded_tools: vec![],
+                process_audio_without_transcription: false,
+                save_transcribed_audio: false,
             },
         );
 
@@ -1480,6 +1486,8 @@ mod tests {
                 proxy_url: None,
                 approval_timeout_secs: 120,
                 excluded_tools: vec![],
+                process_audio_without_transcription: false,
+                save_transcribed_audio: false,
             },
         );
         // Inbound peer authorization lives in peer_groups in V3.

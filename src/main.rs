@@ -2013,6 +2013,33 @@ async fn main() -> Result<()> {
                 // first iteration; reload would otherwise see a moved value.
                 let canvas_store_for_gateway = canvas_store_for_gateway.clone();
                 let canvas_store_for_channels = canvas_store_for_channels.clone();
+
+                // Audit logger
+                let zeroclaw_dir = current_config
+                    .config_path
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .to_path_buf();
+                let audit_logger = if current_config.security.audit.enabled {
+                    match zeroclaw_runtime::security::audit::AuditLogger::new(
+                        current_config.security.audit.clone(),
+                        zeroclaw_dir.clone(),
+                    ) {
+                        Ok(l) => Some(std::sync::Arc::new(l)),
+                        Err(e) => {
+                            ::zeroclaw_log::record!(
+                                WARN,
+                                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                                    .with_attrs(::serde_json::json!({"error": format!("{}", e)})),
+                                "Failed to initialize audit logger"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
                 let subsystems = daemon::DaemonSubsystems {
                     #[cfg(feature = "gateway")]
                     gateway_start: Some(Box::new(move |host, port, config, tx, reload_tx| {
@@ -2073,6 +2100,7 @@ async fn main() -> Result<()> {
                     })),
                     #[cfg(not(feature = "channel-mqtt"))]
                     mqtt_start: None,
+                    audit_logger,
                 };
                 let exit = Box::pin(daemon::run(
                     current_config.clone(),
