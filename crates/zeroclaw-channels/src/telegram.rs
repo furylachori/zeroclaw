@@ -486,7 +486,6 @@ impl TelegramChannel {
         self
     }
 
-    /// Set whether to download audio messages even when transcription is disabled.
     /// Configure whether Telegram-native acknowledgement reactions are sent.
     pub fn with_ack_reactions(mut self, enabled: bool) -> Self {
         self.ack_reactions = enabled;
@@ -1756,7 +1755,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 INFO,
                 ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note),
                 &format!(
-"Skipping voice message: duration {}s exceeds limit {}s",
+                    "Skipping voice message: duration {}s exceeds limit {}s",
                     meta.duration_secs, max_duration
                 )
             );
@@ -2094,7 +2093,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                     ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
                         .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
                         .with_attrs(::serde_json::json!({"error": format!("{}", e)})),
-"Failed to get audio file path"
+                    "Failed to get audio file path"
                 );
                 return None;
             }
@@ -2141,7 +2140,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 WARN,
                 ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
                     .with_attrs(::serde_json::json!({"error": format!("{}", e)})),
-                &format!("Failed to create telegram_files directory for {}, cannot save audio", prefix)
+                "Failed to create telegram_files directory"
             );
             return None;
         }
@@ -7287,4 +7286,163 @@ mod tests {
         let cb_data = "some_other_action:data";
         assert!(cb_data.strip_prefix("approval:").is_none());
     }
+
+    // ── Tier 1: Content-Length guard tests ──────────────────────────────────
+
+    #[tokio::test]
+    async fn download_file_rejects_oversized_file() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let oversized_body = vec![0u8; (TELEGRAM_MAX_FILE_DOWNLOAD_BYTES + 1) as usize];
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/file/bot[^/]+/file_path$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Length", oversized_body.len().to_string())
+                    .set_body_raw(oversized_body, "application/octet-stream"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let ch = TelegramChannel::new(
+            "fake-token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_api_base(mock_server.uri());
+
+        let result = ch.download_file("file_path").await;
+        assert!(result.is_err(), "Expected error for oversized file");
+        assert!(
+            result.unwrap_err().to_string().contains("too large"),
+            "Error should mention 'too large'"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_file_accepts_at_limit() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let exact_body = vec![0u8; TELEGRAM_MAX_FILE_DOWNLOAD_BYTES as usize];
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/file/bot[^/]+/file_path$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Length", exact_body.len().to_string())
+                    .set_body_raw(exact_body.clone(), "application/octet-stream"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let ch = TelegramChannel::new(
+            "fake-token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_api_base(mock_server.uri());
+
+        let result = ch.download_file("file_path").await;
+        assert!(result.is_ok(), "Expected success at exact limit: {:?}", result.err());
+        assert_eq!(result.unwrap(), exact_body);
+    }
+
+    #[tokio::test]
+    async fn download_file_proceeds_without_content_length_header() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let body = vec![42u8; 16];
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/file/bot[^/]+/file_path$"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body.clone(), "application/octet-stream"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let ch = TelegramChannel::new(
+            "fake-token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_api_base(mock_server.uri());
+
+        let result = ch.download_file("file_path").await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), body);
+    }
+
+    // ── Tier 2: VoiceMetadata and dispatcher tests ─────────────────────────
+
+    #[test]
+    fn parse_voice_metadata_full_fields_voice() {
+        let msg = serde_json::json!({
+            "voice": {
+                "file_id": "voice_abc123",
+                "duration": 45,
+                "mime_type": "audio/ogg",
+                "file_size": 102400
+            }
+        });
+        let meta = TelegramChannel::parse_voice_metadata(&msg).unwrap();
+        assert_eq!(meta.file_id, "voice_abc123");
+        assert_eq!(meta.duration_secs, 45);
+        assert_eq!(meta.is_voice, true);
+        assert_eq!(meta.mime_type.as_deref(), Some("audio/ogg"));
+        assert_eq!(meta.file_size, Some(102400));
+    }
+
+    #[test]
+    fn parse_voice_metadata_full_fields_audio() {
+        let msg = serde_json::json!({
+            "audio": {
+                "file_id": "audio_xyz789",
+                "duration": 120,
+                "mime_type": "audio/mpeg",
+                "file_size": 512000
+            }
+        });
+        let meta = TelegramChannel::parse_voice_metadata(&msg).unwrap();
+        assert_eq!(meta.file_id, "audio_xyz789");
+        assert_eq!(meta.duration_secs, 120);
+        assert_eq!(meta.is_voice, false);
+        assert_eq!(meta.mime_type.as_deref(), Some("audio/mpeg"));
+        assert_eq!(meta.file_size, Some(512000));
+    }
+
+    #[tokio::test]
+    async fn processing_mode_skip_when_no_transcription() {
+        let ch = TelegramChannel::new(
+            "token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        );
+
+        let update = serde_json::json!({
+            "message": {
+                "message_id": 1,
+                "voice": { "file_id": "vf", "duration": 30 },
+                "from": { "id": 123, "username": "alice" },
+                "chat": { "id": 456, "type": "private" }
+            }
+        });
+
+        // No transcription config, no process_audio_without_transcription → Skip → None
+        let result = ch.try_parse_voice_message(&update).await;
+        assert!(result.is_none(), "Skip mode should return None immediately");
+    }
+
 }
