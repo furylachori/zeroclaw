@@ -1425,11 +1425,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
     /// Download a file from the Telegram CDN.
     async fn download_file(&self, file_path: &str) -> anyhow::Result<Vec<u8>> {
-        let url = format!(
-            "{}/file/bot{}/{file_path}",
-            self.api_base,
-            self.bot_token
-        );
+        let url = format!("{}/file/bot{}/{file_path}", self.api_base, self.bot_token);
         let resp = self
             .http_client()
             .get(&url)
@@ -1445,14 +1441,14 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         // the download limit before buffering them into memory.  This
         // prevents OOM when the remote server reports a small `file_size`
         // in the JSON metadata but serves a much larger body (Track 4-1/4-4).
-        if let Some(content_length) = resp.content_length() {
-            if content_length > TELEGRAM_MAX_FILE_DOWNLOAD_BYTES {
-                anyhow::bail!(
-                    "Telegram file download too large: {} bytes (limit {} bytes)",
-                    content_length,
-                    TELEGRAM_MAX_FILE_DOWNLOAD_BYTES
-                );
-            }
+        if let Some(content_length) = resp.content_length()
+            && content_length > TELEGRAM_MAX_FILE_DOWNLOAD_BYTES
+        {
+            anyhow::bail!(
+                "Telegram file download too large: {} bytes (limit {} bytes)",
+                content_length,
+                TELEGRAM_MAX_FILE_DOWNLOAD_BYTES
+            );
         }
 
         Ok(resp.bytes().await?.to_vec())
@@ -1470,8 +1466,14 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         };
 
         let file_id = data.get("file_id")?.as_str()?.to_string();
-        let duration_secs = data.get("duration").and_then(serde_json::Value::as_u64).unwrap_or(0);
-        let mime_type = data.get("mime_type").and_then(|v| v.as_str()).map(String::from);
+        let duration_secs = data
+            .get("duration")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let mime_type = data
+            .get("mime_type")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let file_size = data.get("file_size").and_then(serde_json::Value::as_u64);
 
         Some(VoiceMetadata {
@@ -1734,8 +1736,8 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         // Step 2: Calculate ProcessingMode
         let mode = {
-            let has_transcription = self.transcription.is_some()
-                && self.transcription_manager.is_some();
+            let has_transcription =
+                self.transcription.is_some() && self.transcription_manager.is_some();
             if has_transcription {
                 ProcessingMode::FullTranscription
             } else if self.process_audio_without_transcription {
@@ -1764,23 +1766,23 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         }
 
         // Step 4: File size check (existing constant)
-        if let Some(size) = meta.file_size {
-            if size > TELEGRAM_MAX_FILE_DOWNLOAD_BYTES {
-                ::zeroclaw_log::record!(
-                    INFO,
-                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
-                        .with_attrs(::serde_json::json!({
-                            "size_bytes": size,
-                            "limit_bytes": TELEGRAM_MAX_FILE_DOWNLOAD_BYTES
-                        })),
-                    &format!(
-                        "Voice file size {}MB exceeds limit {}MB",
-                        size / (1024 * 1024),
-                        TELEGRAM_MAX_FILE_DOWNLOAD_BYTES / (1024 * 1024)
-                    )
-                );
-                return None;
-            }
+        if let Some(size) = meta.file_size
+            && size > TELEGRAM_MAX_FILE_DOWNLOAD_BYTES
+        {
+            ::zeroclaw_log::record!(
+                INFO,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                    .with_attrs(::serde_json::json!({
+                        "size_bytes": size,
+                        "limit_bytes": TELEGRAM_MAX_FILE_DOWNLOAD_BYTES
+                    })),
+                &format!(
+                    "Voice file size {}MB exceeds limit {}MB",
+                    size / (1024 * 1024),
+                    TELEGRAM_MAX_FILE_DOWNLOAD_BYTES / (1024 * 1024)
+                )
+            );
+            return None;
         }
 
         // Step 5: User authorization check
@@ -1899,7 +1901,10 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         // Generate filename and optionally save
         let (filename, local_path) = if should_save {
-            let workspace = self.workspace_dir.as_ref().expect("workspace_dir checked above");
+            let workspace = self
+                .workspace_dir
+                .as_ref()
+                .expect("workspace_dir checked above");
 
             // Extension detection with MIME preference
             let ext = if let Some(mime) = &meta.mime_type {
@@ -1928,7 +1933,10 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                     WARN,
                     ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
                         .with_attrs(::serde_json::json!({"error": format!("{}", e)})),
-                    &format!("Failed to create telegram_files directory for {}, falling back to memory-only", prefix)
+                    &format!(
+                        "Failed to create telegram_files directory for {}, falling back to memory-only",
+                        prefix
+                    )
                 );
                 return None;
             }
@@ -1963,7 +1971,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             }
         };
 
-        let transcription_result = manager.transcribe(&audio_data, &file_name).await;
+        let transcription_result = manager.transcribe(&audio_data, file_name).await;
 
         match transcription_result {
             Ok(text) if !text.trim().is_empty() => {
@@ -2013,6 +2021,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                     thread_ts: thread_id.map(String::from),
                     interruption_scope_id: None,
                     attachments: vec![],
+                    subject: None,
                 })
             }
             Ok(_) | Err(_) => {
@@ -2046,6 +2055,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                         thread_ts: thread_id.map(String::from),
                         interruption_scope_id: None,
                         attachments: vec![],
+                        subject: None,
                     })
                 } else {
                     ::zeroclaw_log::record!(
@@ -7355,7 +7365,11 @@ mod tests {
         .with_api_base(mock_server.uri());
 
         let result = ch.download_file("file_path").await;
-        assert!(result.is_ok(), "Expected success at exact limit: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Expected success at exact limit: {:?}",
+            result.err()
+        );
         assert_eq!(result.unwrap(), exact_body);
     }
 
@@ -7369,7 +7383,9 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path_regex(r"/file/bot[^/]+/file_path$"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(body.clone(), "application/octet-stream"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(body.clone(), "application/octet-stream"),
+            )
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -7447,5 +7463,4 @@ mod tests {
         let result = ch.try_parse_voice_message(&update).await;
         assert!(result.is_none(), "Skip mode should return None immediately");
     }
-
 }
