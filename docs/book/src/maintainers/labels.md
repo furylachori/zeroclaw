@@ -165,6 +165,20 @@ Track lifecycle state of RFCs and tracked work items. Applied manually.
 | `status:in-progress` | An open PR is actively targeting this issue |
 | `status:accepted` | RFC or work item ratified by the team |
 
+## Resolution labels
+
+Resolution labels explain why an issue or PR is being closed or removed from the active queue. They are terminal outcomes, not lifecycle status labels, and should include enough comment context for a future maintainer to understand the decision.
+
+| Label | Purpose |
+|---|---|
+| `wontfix` | Valid request or report that the project is explicitly choosing not to pursue. Use a brief rationale; do not silently close. |
+| `invalid` | Not actionable as a bug, feature request, support item, RFC, or tracked project work. Explain the mismatch or missing requirement. |
+| `duplicate` | Same underlying issue as another tracked issue or PR. Link the canonical target before closing or redirecting discussion. |
+
+Do not create or apply proposed terminal labels such as `status:wont-do` or `status:wont-fix` until a maintainer-approved label migration packet defines the exact rename, alias, or deletion plan. The current live label for the board-level "Won't Do" concept is `wontfix`.
+
+Superseding is a replacement process, not currently a live label. Use [Superseding PRs](./superseding.md) for replacement rules and attribution requirements until a later approved migration packet creates or maps a superseding label.
+
 ## Triage labels
 
 Applied manually — the auto-response automation that used to handle these was removed during CI simplification.
@@ -173,11 +187,18 @@ Applied manually — the auto-response automation that used to handle these was 
 |---|---|
 | `r:needs-repro` | Incomplete bug report; request a deterministic repro |
 | `r:support` | Usage / help item better handled outside the bug backlog |
-| `invalid` | Not a valid bug or feature request |
-| `duplicate` | Duplicate of an existing issue |
 | `stale-candidate` | Dormant PR or issue; candidate for closing |
-| `superseded` | Replaced by a newer PR |
-| `status:no-stale` | Exempt from stale automation; accepted but blocked work |
+
+## Community pickup labels
+
+Applied manually when maintainers want outside contribution.
+
+| Label | Purpose |
+|---|---|
+| `good first issue` | Small, self-contained, well-documented XS/S work that is safe for a new contributor and has acceptance criteria, relevant code or docs links, and a named mentor or contact |
+| `help wanted` | Actionable, unblocked work that maintainers want external help on and can review, usually low or medium likely issue risk |
+
+Do not use `help wanted` as a generic marker for "valid but unstaffed." If an issue is blocked, architecture-dependent, missing acceptance criteria, likely high-risk, or waiting on a policy decision, leave it without pickup labels until the blocker is resolved or a maintainer writes the missing scope.
 
 ## Maintenance triggers
 
