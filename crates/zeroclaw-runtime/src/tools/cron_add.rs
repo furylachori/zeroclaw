@@ -444,7 +444,8 @@ mod tests {
 
     fn test_security(cfg: &Config) -> Arc<SecurityPolicy> {
         Arc::new(
-            SecurityPolicy::for_agent(cfg, TEST_AGENT, None).expect("test-agent has resolvable profiles"),
+            SecurityPolicy::for_agent(cfg, TEST_AGENT, None)
+                .expect("test-agent has resolvable profiles"),
         )
     }
 

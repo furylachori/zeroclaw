@@ -2036,10 +2036,8 @@ impl SecurityPolicy {
     /// Check if autonomy level permits any action at all
     pub fn can_act(&self) -> bool {
         let result = self.autonomy != AutonomyLevel::ReadOnly;
-        if !result {
-            if let Some(logger) = self.audit_logger.as_ref() {
-                logger.log_policy_violation("can_act", "autonomy is read-only");
-            }
+        if !result && let Some(logger) = self.audit_logger.as_ref() {
+            logger.log_policy_violation("can_act", "autonomy is read-only");
         }
         result
     }
@@ -2069,7 +2067,10 @@ impl SecurityPolicy {
 
                 if !self.record_action() {
                     if let Some(logger) = self.audit_logger.as_ref() {
-                        logger.log_policy_violation("enforce_tool_operation", &format!("rate limit exceeded for '{}'", operation_name));
+                        logger.log_policy_violation(
+                            "enforce_tool_operation",
+                            &format!("rate limit exceeded for '{}'", operation_name),
+                        );
                     }
                     return Err("Rate limit exceeded: action budget exhausted".to_string());
                 }
@@ -2390,7 +2391,11 @@ impl SecurityPolicy {
     /// `runtime_profile` falls back to zero budgets (treated as "inherit /
     /// no enforcement"), matching the previous default when the budget
     /// fields lived on the risk profile.
-    pub fn for_agent(config: &crate::schema::Config, agent_alias: &str, audit_logger: Option<Arc<dyn AuditSink>>) -> anyhow::Result<Self> {
+    pub fn for_agent(
+        config: &crate::schema::Config,
+        agent_alias: &str,
+        audit_logger: Option<Arc<dyn AuditSink>>,
+    ) -> anyhow::Result<Self> {
         let risk_profile = config.risk_profile_for_agent(agent_alias).ok_or_else(|| {
             ::zeroclaw_log::record!(
                 ERROR,
@@ -2408,7 +2413,12 @@ impl SecurityPolicy {
         // file_read/write/edit and the shell tool jail to the agent's
         // own dir, not the install-wide legacy path.
         let agent_workspace = config.agent_workspace_dir(agent_alias);
-        let mut policy = Self::from_profiles(risk_profile, runtime_profile, &agent_workspace, audit_logger);
+        let mut policy = Self::from_profiles(
+            risk_profile,
+            runtime_profile,
+            &agent_workspace,
+            audit_logger,
+        );
 
         // Shared skills directory: every agent reads from
         // `<install>/shared/skills/` so the `read_skills` tool resolves

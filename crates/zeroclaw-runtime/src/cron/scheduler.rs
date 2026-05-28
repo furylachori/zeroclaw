@@ -998,7 +998,8 @@ mod tests {
     }
 
     fn test_security(config: &Config) -> SecurityPolicy {
-        SecurityPolicy::for_agent(config, TEST_AGENT, None).expect("test-agent has resolvable profiles")
+        SecurityPolicy::for_agent(config, TEST_AGENT, None)
+            .expect("test-agent has resolvable profiles")
     }
 
     fn test_job(command: &str) -> CronJob {

@@ -5028,7 +5028,9 @@ fn build_channel_by_id(
                     .with_tts(&config)
                     .with_workspace_dir(config.data_dir.clone())
                     .with_approval_timeout_secs(tg.approval_timeout_secs)
-                    .with_process_audio_without_transcription(tg.process_audio_without_transcription)
+                    .with_process_audio_without_transcription(
+                        tg.process_audio_without_transcription,
+                    )
                     .with_save_transcribed_audio(tg.save_transcribed_audio),
             ))
         }

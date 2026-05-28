@@ -322,21 +322,22 @@ impl DelegateTool {
         let Some(config) = self.root_config.as_ref() else {
             return Ok(Arc::clone(&self.security));
         };
-        let mut target_policy = SecurityPolicy::for_agent(config, target_alias, None).map_err(|e| {
-            ::zeroclaw_log::record!(
-                WARN,
-                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
-                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
-                    .with_attrs(::serde_json::json!({
-                        "target_agent": target_alias,
-                        "error": format!("{}", e),
-                    })),
-                "delegate: could not resolve target's security policy"
-            );
-            anyhow::Error::msg(format!(
-                "could not resolve security policy for delegate target {target_alias:?}: {e}"
-            ))
-        })?;
+        let mut target_policy =
+            SecurityPolicy::for_agent(config, target_alias, None).map_err(|e| {
+                ::zeroclaw_log::record!(
+                    WARN,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                        .with_attrs(::serde_json::json!({
+                            "target_agent": target_alias,
+                            "error": format!("{}", e),
+                        })),
+                    "delegate: could not resolve target's security policy"
+                );
+                anyhow::Error::msg(format!(
+                    "could not resolve security policy for delegate target {target_alias:?}: {e}"
+                ))
+            })?;
         target_policy
             .ensure_no_escalation_beyond(&self.security)
             .map_err(|violation| {
@@ -3576,8 +3577,9 @@ mod tests {
     #[tokio::test]
     async fn delegate_rejects_target_whose_policy_escalates_caller() {
         let config = config_with_two_agents("caller", 5, "target", 50);
-        let caller_policy =
-            Arc::new(SecurityPolicy::for_agent(&config, "caller", None).expect("caller policy resolves"));
+        let caller_policy = Arc::new(
+            SecurityPolicy::for_agent(&config, "caller", None).expect("caller policy resolves"),
+        );
         let mut delegate_agents = HashMap::new();
         for (name, agent) in &config.agents {
             delegate_agents.insert(name.clone(), agent.clone());
@@ -3598,8 +3600,9 @@ mod tests {
     #[tokio::test]
     async fn delegate_target_inherits_caller_action_tracker() {
         let config = config_with_two_agents("caller", 5, "target", 5);
-        let caller_policy =
-            Arc::new(SecurityPolicy::for_agent(&config, "caller", None).expect("caller policy resolves"));
+        let caller_policy = Arc::new(
+            SecurityPolicy::for_agent(&config, "caller", None).expect("caller policy resolves"),
+        );
         let mut delegate_agents = HashMap::new();
         for (name, agent) in &config.agents {
             delegate_agents.insert(name.clone(), agent.clone());
@@ -3684,8 +3687,9 @@ mod tests {
         // must catch the narrowing at the delegate boundary and
         // refuse to dispatch.
         let config = config_with_narrowed_target();
-        let caller_policy =
-            Arc::new(SecurityPolicy::for_agent(&config, "caller", None).expect("caller policy resolves"));
+        let caller_policy = Arc::new(
+            SecurityPolicy::for_agent(&config, "caller", None).expect("caller policy resolves"),
+        );
         let mut delegate_agents = HashMap::new();
         for (name, agent) in &config.agents {
             delegate_agents.insert(name.clone(), agent.clone());

@@ -157,7 +157,7 @@ pub async fn execute_one_tool(
                     arguments: Some(full_args.clone()),
                     result: Some(output.clone()),
                 });
-                if let Some(ref logger) = audit_logger {
+                if let Some(logger) = audit_logger {
                     let _ = logger.log_command(
                         "channel",
                         call_name,
