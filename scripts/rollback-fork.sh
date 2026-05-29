@@ -18,6 +18,9 @@ SUCCESS_COUNT=0
 ERROR_COUNT=0
 declare -a RESULTS=()
 
+# ── Escape single quotes for safe embedding in remote shell commands ─────────
+sq() { printf "%s" "$1" | sed "s/'/'\\\\''/g"; }
+
 # ── Usage ────────────────────────────────────────────────────────────────────
 usage() {
     cat <<EOF
@@ -66,15 +69,21 @@ if [[ -z "$HOST" || -z "$SSH_USER" || -z "$USERS" || -z "$BACKUP_PATH" ]]; then
     exit 1
 fi
 
-SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+SSH_OPTS=(-o StrictHostKeyChecking=yes -o ConnectTimeout=10)
 if [[ -n "$SSH_KEY" ]]; then
-    SSH_OPTS="$SSH_OPTS -i $SSH_KEY"
+    SSH_OPTS+=(-i "$SSH_KEY")
 fi
+
+# ── Cleanup trap ─────────────────────────────────────────────────────────────
+cleanup() {
+    # shellcheck disable=SC2086
+    ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" "rm -rf /tmp/zeroclaw-upgrade" 2>/dev/null || true
+}
+trap cleanup EXIT
 
 # ── Helper: run command on VPS ───────────────────────────────────────────────
 remote() {
-    # shellcheck disable=SC2086
-    ssh $SSH_OPTS "${SSH_USER}@${HOST}" "$@"
+    ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" "$@"
 }
 
 # ── Verify connection and backup ────────────────────────────────────────────
@@ -89,7 +98,7 @@ fi
 echo -e "${GREEN}✓ SSH connection OK${NC}"
 
 echo -e "${YELLOW}▸ Verifying backup binary exists...${NC}"
-if ! remote "test -x '${BACKUP_PATH}'"; then
+if ! remote "test -x '$(sq "$BACKUP_PATH")'"; then
     echo -e "${RED}❌ Backup binary not found or not executable at '${BACKUP_PATH}'${NC}" >&2
     exit 1
 fi
@@ -102,28 +111,36 @@ for user in "${USER_LIST[@]}"; do
     user="$(echo "$user" | xargs)"
     echo -e "\n${BOLD}── User: ${user} ──${NC}"
 
-    if ! remote "id '$user' &>/dev/null"; then
+    # Validate username format to prevent command injection
+    if [[ ! "$user" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+        echo -e "  ${RED}❌ Invalid username format: '${user}'${NC}"
+        RESULTS+=("${user}: ❌ error (invalid username)")
+        ((ERROR_COUNT++)) || true
+        continue
+    fi
+
+    if ! remote "id '$(sq "$user")' &>/dev/null"; then
         echo -e "  ${RED}❌ User '${user}' does not exist on VPS${NC}"
         RESULTS+=("${user}: ❌ error (user not found)")
         ((ERROR_COUNT++)) || true
         continue
     fi
 
-    USER_HOME="$(remote "eval echo ~$user")"
+    USER_HOME="$(remote "getent passwd '$(sq "$user")' | cut -d: -f6")"
 
     # ── Restore binary ──
     echo -e "  ${YELLOW}▸ Restoring binary...${NC}"
-    remote "mkdir -p '${USER_HOME}/.cargo/bin' && cp '${BACKUP_PATH}' '${USER_HOME}/.cargo/bin/zeroclaw' && chmod 755 '${USER_HOME}/.cargo/bin/zeroclaw' && chown '${user}:' '${USER_HOME}/.cargo/bin/zeroclaw'"
+    remote "mkdir -p '$(sq "$USER_HOME")/.cargo/bin' && cp '$(sq "$BACKUP_PATH")' '$(sq "$USER_HOME")/.cargo/bin/zeroclaw' && chmod 755 '$(sq "$USER_HOME")/.cargo/bin/zeroclaw' && chown '$(sq "$user"):' '$(sq "$USER_HOME")/.cargo/bin/zeroclaw'"
     echo -e "  ${GREEN}✓ Binary restored${NC}"
 
     # ── Restart systemd service ──
-    SVC_EXISTS="$(remote "sudo -u '$user' XDG_RUNTIME_DIR=/run/user/\$(id -u '$user') systemctl --user status zeroclaw &>/dev/null && echo yes || echo no")"
+    SVC_EXISTS="$(remote "sudo -u '$(sq "$user")' XDG_RUNTIME_DIR=/run/user/\$(id -u '$(sq "$user")') systemctl --user status zeroclaw &>/dev/null && echo yes || echo no")"
     if [[ "$SVC_EXISTS" == "no" ]]; then
         echo -e "  ${YELLOW}⚠ systemd user service not found — skipping restart${NC}"
         RESULTS+=("${user}: ⚠️  binary restored, service not restarted")
     else
         echo -e "  ${YELLOW}▸ Restarting zeroclaw service...${NC}"
-        remote "sudo -u '$user' XDG_RUNTIME_DIR=/run/user/\$(id -u '$user') systemctl --user restart zeroclaw"
+        remote "sudo -u '$(sq "$user")' XDG_RUNTIME_DIR=/run/user/\$(id -u '$(sq "$user")') systemctl --user restart zeroclaw"
         echo -e "  ${GREEN}✓ Service restarted${NC}"
         echo -e "  ${GREEN}✅ ${user}: rollback complete${NC}"
         RESULTS+=("${user}: ✅ success")
