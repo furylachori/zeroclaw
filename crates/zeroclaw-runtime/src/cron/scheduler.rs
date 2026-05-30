@@ -292,7 +292,7 @@ pub async fn execute_job_now(config: &Config, job: &CronJob) -> (bool, String) {
         );
     };
     let agent_alias = agent_alias.to_string();
-    let security = match SecurityPolicy::for_agent(config, &agent_alias) {
+    let security = match SecurityPolicy::for_agent(config, &agent_alias, None) {
         Ok(s) => s,
         Err(e) => return (false, format!("agent {agent_alias} risk profile: {e}")),
     };
@@ -356,7 +356,7 @@ async fn process_due_jobs(
             return None;
         };
         let agent_alias = agent_alias.to_owned();
-        let security = match SecurityPolicy::for_agent(config, &agent_alias) {
+        let security = match SecurityPolicy::for_agent(config, &agent_alias, None) {
             Ok(s) => Arc::new(s),
             Err(e) => {
                 ::zeroclaw_log::record!(WARN, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_outcome(::zeroclaw_log::EventOutcome::Unknown).with_attrs(::serde_json::json!({"job_id": job.id, "agent": agent_alias, "error": format!("{}", e)})), "Cron job: failed to build SecurityPolicy for owning agent");
@@ -998,7 +998,8 @@ mod tests {
     }
 
     fn test_security(config: &Config) -> SecurityPolicy {
-        SecurityPolicy::for_agent(config, TEST_AGENT).expect("test-agent has resolvable profiles")
+        SecurityPolicy::for_agent(config, TEST_AGENT, None)
+            .expect("test-agent has resolvable profiles")
     }
 
     fn test_job(command: &str) -> CronJob {

@@ -1,0 +1,107 @@
+// ── Content-Length guard Tier 1 tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn download_file_rejects_oversized_file() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        let oversized_body = vec![0u8; (TELEGRAM_MAX_FILE_DOWNLOAD_BYTES + 1) as usize];
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/file/bot[^/]+/file_path$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Length", oversized_body.len().to_string())
+                    .set_body(oversized_body),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let ch = TelegramChannel::new(
+            "fake-token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_api_base(mock_server.uri());
+
+        let result = ch.download_file("file_path").await;
+
+        assert!(result.is_err(), "Expected error for oversized file");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("too large"),
+            "Expected 'too large' error message, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn download_file_accepts_at_limit() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        // Exact limit: 20 MiB
+        let exact_body = vec![0u8; TELEGRAM_MAX_FILE_DOWNLOAD_BYTES as usize];
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/file/bot[^/]+/file_path$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Length", exact_body.len().to_string())
+                    .set_body(exact_body.clone()),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let ch = TelegramChannel::new(
+            "fake-token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_api_base(mock_server.uri());
+
+        let result = ch.download_file("file_path").await;
+
+        assert!(result.is_ok(), "Expected success for file at exact limit: {:?}", result.err());
+        assert_eq!(result.unwrap(), exact_body);
+    }
+
+    #[tokio::test]
+    async fn download_file_proceeds_without_content_length_header() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        // Small body, no Content-Length header
+        let body: Vec<u8> = vec![42u8; 16];
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/file/bot[^/]+/file_path$"))
+            // No Content-Length header
+            .respond_with(ResponseTemplate::new(200).set_body(body.clone()))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let ch = TelegramChannel::new(
+            "fake-token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_api_base(mock_server.uri());
+
+        let result = ch.download_file("file_path").await;
+
+        assert!(result.is_ok(), "Expected success for response without Content-Length: {:?}", result.err());
+        assert_eq!(result.unwrap(), body);
+    }

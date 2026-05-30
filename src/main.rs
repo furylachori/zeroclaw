@@ -40,7 +40,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use dialoguer::{Password, Select};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use zeroclaw_config::api_error::{ConfigApiCode, ConfigApiError};
 
 /// Decorate the value at `path` in `config.toml` with a leading `# {comment}`
@@ -885,62 +885,6 @@ fn resolve_onboard_target(
     (target, deprecation)
 }
 
-#[cfg(feature = "agent-runtime")]
-fn runtime_dir_env_is_explicit(name: &str, value: &str) -> bool {
-    match name {
-        "ZEROCLAW_CONFIG_DIR" | "ZEROCLAW_DATA_DIR" => !value.trim().is_empty(),
-        "ZEROCLAW_WORKSPACE" => !value.is_empty(),
-        _ => false,
-    }
-}
-
-#[cfg(feature = "agent-runtime")]
-fn resolve_homebrew_onboard_config_dir(
-    exe: &Path,
-    env_lookup: impl Fn(&str) -> Option<String>,
-) -> Option<PathBuf> {
-    let explicit_runtime_dir = [
-        "ZEROCLAW_CONFIG_DIR",
-        "ZEROCLAW_DATA_DIR",
-        "ZEROCLAW_WORKSPACE",
-    ]
-    .iter()
-    .any(|name| env_lookup(name).is_some_and(|value| runtime_dir_env_is_explicit(name, &value)));
-
-    if explicit_runtime_dir {
-        return None;
-    }
-
-    zeroclaw_runtime::service::homebrew_var_dir_from_exe(exe)
-}
-
-#[cfg(feature = "agent-runtime")]
-fn apply_homebrew_onboard_config_dir_with(
-    exe: &Path,
-    env_lookup: impl Fn(&str) -> Option<String>,
-    mut set_env: impl FnMut(&'static str, &Path),
-) -> Option<PathBuf> {
-    let config_dir = resolve_homebrew_onboard_config_dir(exe, env_lookup)?;
-    set_env("ZEROCLAW_CONFIG_DIR", &config_dir);
-    Some(config_dir)
-}
-
-#[cfg(feature = "agent-runtime")]
-fn apply_homebrew_onboard_config_dir() {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-
-    apply_homebrew_onboard_config_dir_with(
-        &exe,
-        |name| std::env::var(name).ok(),
-        |name, value| {
-            // SAFETY: called early in the onboard command path before new threads are spawned.
-            unsafe { std::env::set_var(name, value) };
-        },
-    );
-}
-
 #[cfg(feature = "plugins-wasm")]
 #[derive(Subcommand, Debug)]
 enum PluginCommands {
@@ -1419,8 +1363,6 @@ async fn main() -> Result<()> {
         if let Some((old, new)) = deprecation {
             eprintln!("warning: {old} is deprecated; use `zeroclaw onboard {new}` instead");
         }
-
-        apply_homebrew_onboard_config_dir();
 
         // --reinit backs up the config dir BEFORE load_or_init re-materializes it.
         if *reinit {
@@ -2016,6 +1958,36 @@ async fn main() -> Result<()> {
                 // first iteration; reload would otherwise see a moved value.
                 let canvas_store_for_gateway = canvas_store_for_gateway.clone();
                 let canvas_store_for_channels = canvas_store_for_channels.clone();
+
+                // Audit logger
+                let zeroclaw_dir = current_config
+                    .config_path
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .to_path_buf();
+                let audit_logger = if current_config.security.audit.enabled {
+                    match zeroclaw_runtime::security::audit::AuditLogger::new(
+                        current_config.security.audit.clone(),
+                        zeroclaw_dir.clone(),
+                    ) {
+                        Ok(l) => Some(std::sync::Arc::new(l)),
+                        Err(e) => {
+                            ::zeroclaw_log::record!(
+                                WARN,
+                                ::zeroclaw_log::Event::new(
+                                    module_path!(),
+                                    ::zeroclaw_log::Action::Note
+                                )
+                                .with_attrs(::serde_json::json!({"error": format!("{}", e)})),
+                                "Failed to initialize audit logger"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
                 let subsystems = daemon::DaemonSubsystems {
                     #[cfg(feature = "gateway")]
                     gateway_start: Some(Box::new(move |host, port, config, tx, reload_tx| {
@@ -2076,6 +2048,7 @@ async fn main() -> Result<()> {
                     })),
                     #[cfg(not(feature = "channel-mqtt"))]
                     mqtt_start: None,
+                    audit_logger,
                 };
                 let exit = Box::pin(daemon::run(
                     current_config.clone(),
@@ -4261,110 +4234,6 @@ mod tests {
         let (target, deprecation) = resolve_onboard_target(Some(Section::ModelProviders), &flags);
         assert_eq!(target, Some(Section::ModelProviders));
         assert_eq!(deprecation, Some(("--channels-only", "channels")));
-    }
-
-    #[test]
-    #[cfg(feature = "agent-runtime")]
-    fn homebrew_onboard_config_dir_detects_cellar_paths() {
-        assert_eq!(
-            resolve_homebrew_onboard_config_dir(
-                Path::new("/opt/homebrew/Cellar/zeroclaw/0.8.0/bin/zeroclaw"),
-                |_| None,
-            ),
-            Some(PathBuf::from("/opt/homebrew/var/zeroclaw")),
-        );
-        assert_eq!(
-            resolve_homebrew_onboard_config_dir(
-                Path::new("/usr/local/Cellar/zeroclaw/0.8.0/bin/zeroclaw"),
-                |_| None,
-            ),
-            Some(PathBuf::from("/usr/local/var/zeroclaw")),
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "agent-runtime")]
-    fn homebrew_onboard_config_dir_detects_brew_bin_symlink_layout() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let prefix = temp.path().join("homebrew");
-        std::fs::create_dir_all(prefix.join("Cellar")).expect("create Cellar marker");
-        let exe = prefix.join("bin/zeroclaw");
-
-        assert_eq!(
-            resolve_homebrew_onboard_config_dir(&exe, |_| None),
-            Some(prefix.join("var/zeroclaw")),
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "agent-runtime")]
-    fn homebrew_onboard_config_dir_preserves_explicit_runtime_paths() {
-        let exe = Path::new("/opt/homebrew/Cellar/zeroclaw/0.8.0/bin/zeroclaw");
-
-        for var in [
-            "ZEROCLAW_CONFIG_DIR",
-            "ZEROCLAW_DATA_DIR",
-            "ZEROCLAW_WORKSPACE",
-        ] {
-            assert_eq!(
-                resolve_homebrew_onboard_config_dir(exe, |name| {
-                    (name == var).then(|| "/tmp/zeroclaw-explicit".to_string())
-                }),
-                None,
-                "{var} should take precedence over Homebrew detection",
-            );
-        }
-    }
-
-    #[test]
-    #[cfg(feature = "agent-runtime")]
-    fn homebrew_onboard_config_dir_treats_workspace_whitespace_as_explicit() {
-        let exe = Path::new("/opt/homebrew/Cellar/zeroclaw/0.8.0/bin/zeroclaw");
-
-        assert_eq!(
-            resolve_homebrew_onboard_config_dir(exe, |name| {
-                (name == "ZEROCLAW_WORKSPACE").then(|| "   ".to_string())
-            }),
-            None,
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "agent-runtime")]
-    fn apply_homebrew_onboard_config_dir_sets_detected_config_dir() {
-        let exe = Path::new("/opt/homebrew/Cellar/zeroclaw/0.8.0/bin/zeroclaw");
-        let mut applied = None;
-
-        let detected = apply_homebrew_onboard_config_dir_with(
-            exe,
-            |_| None,
-            |name, value| applied = Some((name, value.to_path_buf())),
-        );
-
-        assert_eq!(detected, Some(PathBuf::from("/opt/homebrew/var/zeroclaw")));
-        assert_eq!(
-            applied,
-            Some((
-                "ZEROCLAW_CONFIG_DIR",
-                PathBuf::from("/opt/homebrew/var/zeroclaw"),
-            )),
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "agent-runtime")]
-    fn apply_homebrew_onboard_config_dir_skips_explicit_config_dir() {
-        let exe = Path::new("/opt/homebrew/Cellar/zeroclaw/0.8.0/bin/zeroclaw");
-        let mut applied = None;
-
-        let detected = apply_homebrew_onboard_config_dir_with(
-            exe,
-            |name| (name == "ZEROCLAW_CONFIG_DIR").then(|| "/tmp/zeroclaw".to_string()),
-            |name, value| applied = Some((name, value.to_path_buf())),
-        );
-
-        assert_eq!(detected, None);
-        assert_eq!(applied, None);
     }
 
     #[test]

@@ -211,7 +211,7 @@ GitHub allows up to six pinned issues per repository. Use them for high-signal, 
 1. The current active RFC under discussion
 2. The most wanted community feature (highest-voted Discussion)
 3. The next release milestone tracking issue
-4. The good first issue index (an issue that links to all current `good first issue` items)
+4. The good-first-issue index (an issue that links to all current `good-first-issue` items)
 
 Pinned issues are a promise to the community: these are the things that matter most right now. Update them when priorities shift.
 
@@ -728,7 +728,7 @@ body:
 ```yaml
 name: Good First Issue (Core Team only)
 description: Tag an issue as a good entry point for new contributors
-labels: ["good first issue"]
+labels: ["good-first-issue", "status:needs-triage"]
 body:
   - type: markdown
     attributes:
@@ -903,8 +903,6 @@ Use `#f1f5f9` (light gray) for all component labels to distinguish them visually
 
 ### `status:` — Where is this in the process?
 
-This table records governance intent and historical taxonomy shape. For current live label semantics and automation behavior, use the maintainer label guide as the operational reference; maintainer docs carry later label-policy corrections from #6808.
-
 | Label | Color | Use |
 |---|---|---|
 | `status:needs-triage` | `#f8fafc` White | Newly opened, not yet reviewed |
@@ -983,9 +981,9 @@ Configure these in the Project's built-in automation settings:
 
 ### 11.2 GitHub Actions Workflows
 
-**Auto-label by changed files:**
+**Auto-label by changed files (`.github/workflows/label-by-path.yml`):**
 
-The active path labeler applies scope labels to PRs based on changed files. Risk and size labels are currently maintainer-applied; the maintainer label guide is the live source for label names, automation status, and risk semantics.
+Automatically add component and risk labels to PRs based on which files were changed. A PR touching `src/security/` gets `component:security` and `risk:high`. A PR touching `docs/` gets `type:docs` and `risk:low`. This eliminates the requirement for PR authors to remember to label their own PRs and gives reviewers immediate context.
 
 **Auto-request CODEOWNERS review (built into CODEOWNERS — no Action needed):**
 
@@ -1058,12 +1056,12 @@ Establish the full workflow and populate the backlog from the accepted RFCs.
 As the plugin system becomes usable, external contributors will start arriving. The contribution infrastructure must be ready.
 
 - [ ] Implement the PR size labeling workflow
-- [ ] Create the first batch of `good first issue` items (minimum 5) for the plugin SDK work
-- [ ] Add the `Good First Issue Index` as a pinned issue with links to current good first issues
+- [ ] Create the first batch of `good-first-issue` items (minimum 5) for the plugin SDK work
+- [ ] Add the `Good First Issue Index` as a pinned issue with links to current good-first-issues
 - [ ] Establish the idea promotion threshold and promote the first Discussion idea to an issue
 - [ ] Document the Core Team expansion process — criteria for inviting new Core Team members
 
-**Success signal:** At least one external contributor (not on the current team) submits a PR via a good first issue. The Discussions Ideas category has active community participation.
+**Success signal:** At least one external contributor (not on the current team) submits a PR via a good-first-issue. The Discussions Ideas category has active community participation.
 
 ---
 
@@ -1110,7 +1108,7 @@ By v1.0.0, the governance model should be self-sustaining — the team should no
 - **CODEOWNERS syntax reference** — https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners — The full syntax for CODEOWNERS files.
 - **"Producing Open Source Software"** — Karl Fogel — The definitive book on running an open source project. Free online at https://producingoss.com. Chapters on governance, contributor management, and communication are directly applicable.
 - **"An Introduction to Open Source Governance Models"** — The Apache Software Foundation's governance documentation is a good model for how a mature open source project formalizes authority and decision-making: https://www.apache.org/foundation/governance/
-- **Vale prose linter** — [Vale](https://vale.sh) — Referenced in the documentation RFC; integrates with the `good first issue` documentation improvement workflow.
+- **Vale prose linter** — https://vale.sh — Referenced in the documentation RFC; integrates with the `good-first-issue` documentation improvement workflow.
 
 ---
 

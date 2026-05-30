@@ -8,8 +8,6 @@ For the actual fetch sequence and review verdict mechanics, see [PR Review Proto
 
 Use this section to route a review before reading deeper. Each row links to the section that elaborates.
 
-Use [PR lanes](./pr-workflow.md#pr-lanes) for routing expectations; use this playbook's risk matrix for review depth.
-
 | Situation | Action | Section |
 |---|---|---|
 | Intake fails in the first 5 minutes | Leave one actionable checklist comment, stop deep review | [Five-minute intake](#five-minute-intake) |
@@ -80,8 +78,6 @@ Vague comments create avoidable round trips. If you find yourself writing "this 
 
 The same risk-routing principle applies to issues, but the labels and signals are different.
 
-Issue `risk:*` labels describe likely fix blast radius from the report. PR `risk:*` labels describe the actual diff under review. Reassess risk when an issue becomes a PR instead of carrying the issue label forward automatically.
-
 ### Triage labels
 
 | Label | When to use |
@@ -137,7 +133,7 @@ This keeps context loss low and avoids the next reviewer redoing the same fetche
 
 ## Weekly queue hygiene
 
-- Walk the stale queue. Apply `status:no-stale` only when accepted or otherwise long-lived work has a recorded reason to stay open and is not already protected by another stale exclusion.
+- Walk the stale queue. Apply `status:no-stale` only to accepted-but-blocked work.
 - Prioritize `size: XS/S` bug and security PRs first.
 - Convert recurring support questions into docs improvements and auto-response guidance.
 

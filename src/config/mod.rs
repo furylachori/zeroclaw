@@ -102,6 +102,8 @@ mod tests {
             proxy_url: None,
             approval_timeout_secs: 120,
             excluded_tools: vec![],
+            process_audio_without_transcription: false,
+            save_transcribed_audio: false,
         };
 
         let discord = DiscordConfig {

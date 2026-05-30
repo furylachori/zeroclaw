@@ -224,6 +224,7 @@ pub struct AuditLogger {
     config: AuditConfig,
     #[allow(dead_code)] // WIP: buffered writes for batch flushing
     buffer: Mutex<Vec<AuditEvent>>,
+    write_mutex: parking_lot::Mutex<()>,
     chain: Mutex<ChainState>,
     /// Signing key (loaded once at construction time if sign_events enabled)
     signing_key: Option<Vec<u8>>,
@@ -285,11 +286,21 @@ impl AuditLogger {
         };
 
         let log_path = zeroclaw_dir.join(&config.log_path);
+
+        if log_path.exists() {
+            let canonical_dir = std::fs::canonicalize(&zeroclaw_dir)?;
+            let canonical_log = std::fs::canonicalize(&log_path)?;
+            if !canonical_log.starts_with(&canonical_dir) {
+                anyhow::bail!("audit log path outside zeroclaw directory");
+            }
+        }
+
         let chain_state = recover_chain_state(&log_path);
         Ok(Self {
             log_path,
             config,
             buffer: Mutex::new(Vec::new()),
+            write_mutex: parking_lot::Mutex::new(()),
             chain: Mutex::new(chain_state),
             signing_key,
         })
@@ -324,6 +335,8 @@ impl AuditLogger {
             return Ok(());
         }
 
+        let _write_guard = self.write_mutex.lock();
+
         // Check log size and rotate if needed
         self.rotate_if_needed()?;
 
@@ -344,13 +357,26 @@ impl AuditLogger {
 
         // Serialize and write
         let line = serde_json::to_string(&chained)?;
+
+        if self.log_path.exists()
+            && let Ok(meta) = std::fs::symlink_metadata(&self.log_path)
+            && meta.file_type().is_symlink()
+        {
+            anyhow::bail!("audit log is a symlink — refusing to write");
+        }
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.log_path)?;
 
         writeln!(file, "{}", line)?;
-        file.sync_all()?;
+        match self.config.sync_mode.as_str() {
+            "none" => {}
+            _ => {
+                file.sync_all()?;
+            }
+        }
 
         Ok(())
     }
@@ -1319,6 +1345,227 @@ mod tests {
         assert!(rec1.signature.is_none(), "second unsigned record");
         assert!(rec2.signature.is_some(), "first signed record");
         assert!(rec3.signature.is_some(), "second signed record");
+
+        Ok(())
+    }
+
+    // ── Tier 3: Security & rotation tests ────────────────────────────────────
+
+    #[test]
+    fn audit_log_rejects_symlink_attack() -> anyhow::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::TempDir::new()?;
+        let log_path = tmp.path().join("audit.log");
+
+        // Pre-create log file so AuditLogger::new succeeds
+        std::fs::write(&log_path, b"")?;
+
+        let config = AuditConfig {
+            enabled: true,
+            log_path: "audit.log".to_string(),
+            max_size_mb: 1,
+            sign_events: false,
+            sync_mode: "none".to_string(),
+        };
+        let logger = AuditLogger::new(config, tmp.path().to_path_buf())?;
+
+        // Replace log file with a symlink pointing outside the audit tree
+        let target = tmp.path().join("secret");
+        std::fs::write(&target, b"sensitive")?;
+        std::fs::remove_file(&log_path)?;
+        symlink(&target, &log_path)?;
+
+        let event = AuditEvent::new(AuditEventType::SecurityEvent).with_actor(
+            "test".to_string(),
+            None,
+            None,
+        );
+        let result = logger.log(&event);
+        assert!(result.is_err(), "log() should reject symlink");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .to_lowercase()
+                .contains("symlink")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn audit_rotate_enforces_max_10_backups() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let log_path = tmp.path().join("audit.log");
+
+        // Pre-populate .1.log through .9.log (loop is 1..10, renames 1..9 → 2..10)
+        for i in 1..=9 {
+            std::fs::write(
+                tmp.path().join(format!("audit.log.{i}.log")),
+                format!(
+                    "backup {i}
+"
+                ),
+            )?;
+        }
+        // Write active log so rotation has something to shift
+        std::fs::write(
+            &log_path, b"active
+",
+        )?;
+
+        let config = AuditConfig {
+            enabled: true,
+            log_path: "audit.log".to_string(),
+            max_size_mb: 0, // Force rotation on any write (any non-empty write exceeds 0 MB threshold)
+            sign_events: false,
+            sync_mode: "none".to_string(),
+        };
+        let logger = AuditLogger::new(config, tmp.path().to_path_buf())?;
+
+        // Write one large entry (> 1 MB) to force immediate rotation
+        let large_event = AuditEvent::new(AuditEventType::SecurityEvent).with_actor(
+            "test".to_string(),
+            None,
+            None,
+        );
+        // Pad to > 1 MB using the actor field
+        let large_payload = "x".repeat(1024 * 1024);
+        let large_event = large_event.with_actor(large_payload, None, None);
+        logger.log(&large_event)?;
+
+        // After rotation (.1.log → .2.log, ..., .9.log → .10.log):
+        // Loop is `1..10` (exclusive), so it processes 1..=9.
+        // - .9.log EXISTS (was .8.log)
+        // - .10.log EXISTS (was .9.log)
+        // - .11.log DOES NOT EXIST (loop bound is exclusive, never creates .11.log)
+        assert!(
+            tmp.path().join("audit.log.9.log").exists(),
+            ".9.log should exist (was .8.log)"
+        );
+        assert!(
+            tmp.path().join("audit.log.10.log").exists(),
+            ".10.log should exist (was .9.log)"
+        );
+        assert!(
+            !tmp.path().join("audit.log.11.log").exists(),
+            ".11.log should not exist"
+        );
+        // Active log should be recreated
+        assert!(log_path.exists(), "active log should still exist");
+
+        Ok(())
+    }
+
+    #[test]
+    fn audit_verify_chain_detects_sequence_gap() -> anyhow::Result<()> {
+        use crate::security::audit::verify_chain;
+        use std::fs::{File, OpenOptions};
+        use std::io::Write;
+
+        let tmp = tempfile::TempDir::new()?;
+        let log_path = tmp.path().join("audit.log");
+
+        // Build two entries: seq 0 → seq 2 (skip 1)
+        let entry0 =
+            AuditEvent::new(AuditEventType::SecurityEvent).with_actor("a".to_string(), None, None);
+        let entry0 = AuditEvent {
+            sequence: 0,
+            prev_hash: crate::security::audit::GENESIS_PREV_HASH.to_string(),
+            ..entry0
+        };
+
+        let entry2 =
+            AuditEvent::new(AuditEventType::SecurityEvent).with_actor("b".to_string(), None, None);
+        let entry2 = AuditEvent {
+            sequence: 2,
+            prev_hash: crate::security::audit::compute_entry_hash(&entry0.entry_hash, &entry0),
+            ..entry2
+        };
+
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&log_path)?;
+        writeln!(file, "{}", serde_json::to_string(&entry0)?)?;
+        writeln!(file, "{}", serde_json::to_string(&entry2)?)?;
+        drop(file);
+
+        let result = verify_chain(&log_path);
+        assert!(result.is_err(), "verify_chain should fail on sequence gap");
+        assert!(result.unwrap_err().to_string().contains("sequence"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn audit_verify_chain_detects_prev_hash_mismatch() -> anyhow::Result<()> {
+        use crate::security::audit::verify_chain;
+        use std::fs::{File, OpenOptions};
+        use std::io::Write;
+
+        let tmp = tempfile::TempDir::new()?;
+        let log_path = tmp.path().join("audit.log");
+
+        // Build a clean chain of 3 entries
+        let entry0 =
+            AuditEvent::new(AuditEventType::SecurityEvent).with_actor("a".to_string(), None, None);
+        let entry0 = AuditEvent {
+            sequence: 0,
+            prev_hash: crate::security::audit::GENESIS_PREV_HASH.to_string(),
+            ..entry0
+        };
+
+        let entry1 =
+            AuditEvent::new(AuditEventType::SecurityEvent).with_actor("b".to_string(), None, None);
+        let entry1 = AuditEvent {
+            sequence: 1,
+            prev_hash: crate::security::audit::compute_entry_hash(&entry0.entry_hash, &entry0),
+            ..entry1
+        };
+
+        let entry2 =
+            AuditEvent::new(AuditEventType::SecurityEvent).with_actor("c".to_string(), None, None);
+        let entry2 = AuditEvent {
+            sequence: 2,
+            prev_hash: crate::security::audit::compute_entry_hash(&entry1.entry_hash, &entry1),
+            ..entry2
+        };
+
+        // Write all 3, then tamper with entry1's prev_hash
+        {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&log_path)?;
+            writeln!(file, "{}", serde_json::to_string(&entry0)?)?;
+            writeln!(file, "{}", serde_json::to_string(&entry1)?)?;
+            writeln!(file, "{}", serde_json::to_string(&entry2)?)?;
+        }
+        let contents = std::fs::read_to_string(&log_path)?;
+        let mut lines: Vec<String> = contents.lines().map(String::from).collect();
+        let mut corrupted: serde_json::Value = serde_json::from_str(&lines[1])?;
+        corrupted["prev_hash"] =
+            serde_json::Value::String("badbadbadbadbadbadbadbadbadbadbadbadbadbadbadb".to_string());
+        lines[1] = serde_json::to_string(&corrupted)?;
+        std::fs::write(
+            &log_path,
+            lines.join(
+                "
+",
+            ),
+        )?;
+
+        let result = verify_chain(&log_path);
+        assert!(
+            result.is_err(),
+            "verify_chain should fail on prev_hash mismatch"
+        );
+        // Rollback modified entry_hash, so verify_chain catches the entry_hash mismatch.
+        assert!(result.unwrap_err().to_string().contains("entry_hash"));
 
         Ok(())
     }
