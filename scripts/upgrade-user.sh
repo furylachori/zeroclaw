@@ -118,8 +118,9 @@ echo -e "\n${CYAN}${BOLD}═══ Phase 2: Backup ═══${NC}"
 
 # Find actual binary path from systemd user service
 _EXEC_RAW="$(systemctl --user show zeroclaw -p ExecStart 2>/dev/null || true)"
-# Extract value after ExecStart= prefix, strip JSON braces, take first token
-INSTALL_PATH="$(echo "$_EXEC_RAW" | sed 's/^ExecStart=//' | tr -d '{}' | awk '{print $1}')"
+# systemd outputs: ExecStart={ path=/home/user/.cargo/bin/zeroclaw ; argv[]=... }
+# Extract just the path value
+INSTALL_PATH="$(echo "$_EXEC_RAW" | sed 's/^ExecStart=//' | sed 's/.*path=//' | sed 's/;.*//' | tr -d ' ')"
 if [[ -n "$INSTALL_PATH" ]]; then
     echo -e "${CYAN}Service binary path: ${INSTALL_PATH}${NC}"
 else
@@ -185,16 +186,16 @@ else
         echo -e "${YELLOW}▸ Adding process_audio_without_transcription...${NC}"
         cp "$CONFIG_PATH" "${CONFIG_PATH}.bak.$(date +%s)-${RANDOM}"
 
-        HAS_SECTION=$(grep -c '^\[channels\.telegram\.default\]' "$CONFIG_PATH" 2>/dev/null || true)
+        HAS_SECTION=$(grep -c '^\[channels\.telegram\]' "$CONFIG_PATH" 2>/dev/null || true)
         HAS_SECTION=${HAS_SECTION:-0}
         if [[ "$HAS_SECTION" -gt 0 ]]; then
             # Insert key after existing section header
-            sed -i '/^\[channels\.telegram\.default\]/a process_audio_without_transcription = true' "$CONFIG_PATH"
+            sed -i '/^\[channels\.telegram\]/a process_audio_without_transcription = true' "$CONFIG_PATH"
         else
             # Append new section
             cat >> "$CONFIG_PATH" <<'TOML'
 
-[channels.telegram.default]
+[channels.telegram]
 process_audio_without_transcription = true
 TOML
         fi
