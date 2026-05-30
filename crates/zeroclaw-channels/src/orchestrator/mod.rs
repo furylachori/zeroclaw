@@ -5840,7 +5840,11 @@ fn collect_configured_channels(
                 .with_workspace_dir(config.channel_workspace_dir(&format!("telegram.{alias}")))
                 .with_proxy_url(tg.proxy_url.clone())
                 .with_tool_command_specs(tool_specs.to_vec())
-                .with_approval_timeout_secs(tg.approval_timeout_secs),
+                .with_approval_timeout_secs(tg.approval_timeout_secs)
+                .with_process_audio_without_transcription(
+                    tg.process_audio_without_transcription,
+                )
+                .with_save_transcribed_audio(tg.save_transcribed_audio),
             ),
         });
     }
