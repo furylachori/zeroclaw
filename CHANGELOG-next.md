@@ -267,3 +267,52 @@ This is a beta. The following are known-broken or unfinished and will be address
 ---
 
 *Full diff: `git log v0.7.5..v0.8.0-beta-1 --oneline`*
+
+---
+
+## ZeroClaw Fork — furylachori/zeroclaw
+
+This fork adds audio auto-download and audit logger wiring on top of v0.8.0-beta-1.
+
+### Audio Auto-Download
+
+Voice messages in Telegram are no longer gated behind transcription. Two new config
+fields on `[channels.telegram]`:
+
+- **`process_audio_without_transcription`** — saves the audio file to
+  `workspace/telegram_files/` without calling the transcription provider.
+- **`save_transcribed_audio`** — after successful transcription, also saves
+  the original audio file.
+
+A `Content-Length` guard was added to `download_file()` to reject oversized files
+before buffering into memory.
+
+Key files: `crates/zeroclaw-channels/src/telegram.rs` (`try_parse_voice_message`,
+`save_audio_file`, `handle_audio_only_save`, `download_file`);
+`crates/zeroclaw-config/src/schema.rs` (new `TelegramConfig` fields).
+
+### Audit Logger Wiring
+
+The audit logger is now instantiated at daemon startup and threaded through every
+agent execution layer (`main.rs → DaemonSubsystems → ChannelRuntimeContext →
+run_tool_call_loop → execute_one_tool`). Policy violations in `SecurityPolicy::can_act`
+and `enforce_tool_operation` are logged. The `AuditLogger` was hardened with a
+`write_mutex`, `sync_mode`, symlink guard, and path canonicalization.
+
+Key files: `crates/zeroclaw-config/src/security/audit.rs`; `crates/zeroclaw-config/src/policy.rs`
+(`AuditSink` trait, 3-arg `for_agent`); `crates/zeroclaw-runtime/src/daemon/mod.rs`
+(`DaemonSubsystems.audit_logger`); `crates/zeroclaw-runtime/src/agent/loop_.rs`
+(29-arg `run_tool_call_loop`); `crates/zeroclaw-runtime/src/agent/tool_execution.rs`
+(`execute_one_tool` with audit logging); `crates/zeroclaw-channels/src/orchestrator/mod.rs`
+(`ChannelRuntimeContext.audit_logger`).
+
+**Breaking signature changes** (50+ call sites updated):
+
+| Function | Package | New arg |
+|---|---|---|
+| `SecurityPolicy::for_agent(config, alias, audit_logger)` | zeroclaw-config | `Option<Arc<dyn AuditSink>>` |
+| `run_tool_call_loop(...)` (29 args) | zeroclaw-runtime | `audit_logger: Option<Arc<AuditLogger>>` |
+| `execute_one_tool(...)` | zeroclaw-runtime | `audit_logger: Option<Arc<AuditLogger>>` |
+| `ChannelRuntimeContext { ... }` | zeroclaw-channels | `audit_logger: None` |
+
+See `FORK.md` for full documentation and upstream sync checklist.
