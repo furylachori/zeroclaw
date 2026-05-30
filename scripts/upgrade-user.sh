@@ -117,7 +117,9 @@ echo -e "${GREEN}✓ Extraction complete${NC}"
 echo -e "\n${CYAN}${BOLD}═══ Phase 2: Backup ═══${NC}"
 
 # Find actual binary path from systemd user service
-INSTALL_PATH="$(systemctl --user show zeroclaw -p ExecStart --value 2>/dev/null | awk '{print $1}')"
+_EXEC_RAW="$(systemctl --user show zeroclaw -p ExecStart 2>/dev/null || true)"
+# Extract value after ExecStart= prefix, strip JSON braces, take first token
+INSTALL_PATH="$(echo "$_EXEC_RAW" | sed 's/^ExecStart=//' | tr -d '{}' | awk '{print $1}')"
 if [[ -n "$INSTALL_PATH" ]]; then
     echo -e "${CYAN}Service binary path: ${INSTALL_PATH}${NC}"
 else
@@ -175,14 +177,16 @@ CONFIG_PATH="${HOME}/.zeroclaw/config.toml"
 if [[ ! -f "$CONFIG_PATH" ]]; then
     echo -e "${YELLOW}⚠ config.toml not found — skipping config update${NC}"
 else
-    HAS_KEY=$(grep -c 'process_audio_without_transcription' "$CONFIG_PATH" 2>/dev/null || echo 0)
+    HAS_KEY=$(grep -c 'process_audio_without_transcription' "$CONFIG_PATH" 2>/dev/null || true)
+    HAS_KEY=${HAS_KEY:-0}
     if [[ "$HAS_KEY" -gt 0 ]]; then
         echo -e "${GREEN}✓ process_audio_without_transcription already present${NC}"
     else
         echo -e "${YELLOW}▸ Adding process_audio_without_transcription...${NC}"
         cp "$CONFIG_PATH" "${CONFIG_PATH}.bak.$(date +%s)-${RANDOM}"
 
-        HAS_SECTION=$(grep -c '^\[channels\.telegram\.default\]' "$CONFIG_PATH" 2>/dev/null || echo 0)
+        HAS_SECTION=$(grep -c '^\[channels\.telegram\.default\]' "$CONFIG_PATH" 2>/dev/null || true)
+        HAS_SECTION=${HAS_SECTION:-0}
         if [[ "$HAS_SECTION" -gt 0 ]]; then
             # Insert key after existing section header
             sed -i '/^\[channels\.telegram\.default\]/a process_audio_without_transcription = true' "$CONFIG_PATH"
