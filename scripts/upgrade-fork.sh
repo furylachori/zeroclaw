@@ -18,6 +18,7 @@ SSH_KEY=""
 SUCCESS_COUNT=0
 WARN_COUNT=0
 ERROR_COUNT=0
+LAST_BACKUP_NAME=""
 declare -a RESULTS=()
 
 # ── Escape single quotes for safe embedding in remote shell commands ─────────
@@ -68,7 +69,14 @@ if [[ -z "$HOST" || -z "$SSH_USER" || -z "$USERS" ]]; then
     exit 1
 fi
 
-SSH_OPTS=(-o StrictHostKeyChecking=yes -o ConnectTimeout=10)
+# [C-1] Validate tag format to prevent command injection
+if [[ ! "$TAG" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo -e "${RED}Error: Invalid tag format '${TAG}'${NC}" >&2
+    exit 1
+fi
+
+# [H-1] accept-new auto-accepts NEW keys but rejects CHANGED keys
+SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
 if [[ -n "$SSH_KEY" ]]; then
     SSH_OPTS+=(-i "$SSH_KEY")
 fi
@@ -80,7 +88,7 @@ REMOTE_DIR="/tmp/zeroclaw-upgrade"
 # ── Cleanup trap ─────────────────────────────────────────────────────────────
 cleanup() {
     # shellcheck disable=SC2086
-    ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" "rm -rf '${REMOTE_DIR}' /tmp/zeroclaw-upgrade.tar.gz /tmp/zeroclaw-sha256sums" 2>/dev/null || true
+    ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" "sudo rm -rf '${REMOTE_DIR}' /tmp/zeroclaw-upgrade.tar.gz /tmp/zeroclaw-sha256sums" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -100,6 +108,22 @@ if ! remote "true"; then
 fi
 echo -e "${GREEN}✓ SSH connection OK${NC}"
 
+# [M-1] Check sudo access — prevents silent hang
+echo -e "${YELLOW}▸ Checking sudo access...${NC}"
+if ! remote "sudo -n true" 2>/dev/null; then
+    echo -e "${RED}Error: SSH user '${SSH_USER}' requires a password for sudo.${NC}" >&2
+    echo "Configure NOPASSWD in /etc/sudoers for this user." >&2
+    exit 1
+fi
+echo -e "${GREEN}✓ sudo access OK${NC}"
+
+# [M-7] Architecture guard — only x86_64 tarball available
+REMOTE_ARCH="$(remote "uname -m")"
+if [[ "$REMOTE_ARCH" != "x86_64" ]]; then
+    echo -e "${RED}❌ VPS architecture is ${REMOTE_ARCH}, but only x86_64 tarball is available.${NC}" >&2
+    exit 1
+fi
+
 echo -e "${YELLOW}▸ Downloading release tarball...${NC}"
 if ! remote "curl -fsSL -o /tmp/zeroclaw-upgrade.tar.gz '${TARBALL_URL}'"; then
     echo -e "${RED}❌ Download failed. Check that tag '${TAG}' exists.${NC}" >&2
@@ -108,9 +132,12 @@ fi
 echo -e "${GREEN}✓ Download complete${NC}"
 
 # ── Phase 1b: Checksum verification ─────────────────────────────────────────
+# [C-2] Extract hash and compare manually to handle filename mismatch
 echo -e "${YELLOW}▸ Downloading SHA256SUMS...${NC}"
 if remote "curl -fsSL -o /tmp/zeroclaw-sha256sums '${SHA256_URL}'"; then
-    if remote "cd /tmp && grep 'zeroclaw-x86_64-unknown-linux-gnu.tar.gz' zeroclaw-sha256sums | sha256sum -c -"; then
+    EXPECTED=$(remote "grep 'zeroclaw-x86_64-unknown-linux-gnu.tar.gz' /tmp/zeroclaw-sha256sums | awk '{print \$1}'")
+    ACTUAL=$(remote "sha256sum /tmp/zeroclaw-upgrade.tar.gz | awk '{print \$1}'")
+    if [[ "$EXPECTED" == "$ACTUAL" ]]; then
         echo -e "${GREEN}✓ Checksum verified${NC}"
     else
         echo -e "${RED}❌ Checksum verification failed! Aborting.${NC}" >&2
@@ -152,71 +179,95 @@ for user in "${USER_LIST[@]}"; do
 
     USER_HOME="$(remote "getent passwd '$(sq "$user")' | cut -d: -f6")"
 
+    # [M-5] Read actual binary path from the service unit
+    INSTALL_PATH="$(remote "sudo -u '$(sq "$user")' env XDG_RUNTIME_DIR=/run/user/\$(id -u '$(sq "$user")') systemctl --user show zeroclaw -p ExecStart --value 2>/dev/null | awk '{print \$1}'")"
+    if [[ -n "$INSTALL_PATH" ]]; then
+        echo -e "  ${CYAN}Service binary path: ${INSTALL_PATH}${NC}"
+    else
+        INSTALL_PATH="${USER_HOME}/.cargo/bin/zeroclaw"
+        echo -e "  ${YELLOW}⚠ Could not determine service binary path — using default: ${INSTALL_PATH}${NC}"
+    fi
+
     # ── Backup existing binary ──
+    # [L-1] Add $RANDOM to avoid filename collision
+    # [M-2] Use /var/lib/zeroclaw-backups/ instead of /tmp
     echo -e "  ${YELLOW}▸ Backing up existing binary...${NC}"
-    BACKUP_NAME="zeroclaw-$(date +%Y%m%d%H%M%S)"
-    remote "mkdir -p /tmp/zeroclaw-backups && cp '$(sq "$USER_HOME")/.cargo/bin/zeroclaw' '/tmp/zeroclaw-backups/${BACKUP_NAME}' 2>/dev/null || echo 'no existing binary to back up'"
-    echo -e "  ${GREEN}✓ Backup saved to /tmp/zeroclaw-backups/${BACKUP_NAME}${NC}"
+    BACKUP_NAME="zeroclaw-$(date +%Y%m%d%H%M%S)-${RANDOM}"
+    LAST_BACKUP_NAME="$BACKUP_NAME"
+    remote "sudo mkdir -p -m 0700 /var/lib/zeroclaw-backups && sudo cp '$(sq "$INSTALL_PATH")' '/var/lib/zeroclaw-backups/${BACKUP_NAME}' 2>/dev/null || echo 'no existing binary to back up'"
+    echo -e "  ${GREEN}✓ Backup saved to /var/lib/zeroclaw-backups/${BACKUP_NAME}${NC}"
+
+    # [M-6] Back up web/dist alongside the binary
+    remote "sudo cp -r '$(sq "$USER_HOME")/.local/share/zeroclaw/web/dist' '/var/lib/zeroclaw-backups/${BACKUP_NAME}-web-dist' 2>/dev/null || echo 'no existing web dist to back up'"
 
     # ── Copy binary ──
     echo -e "  ${YELLOW}▸ Installing binary...${NC}"
-    remote "mkdir -p '$(sq "$USER_HOME")/.cargo/bin' && cp '${REMOTE_DIR}/zeroclaw' '$(sq "$USER_HOME")/.cargo/bin/zeroclaw' && chmod 755 '$(sq "$USER_HOME")/.cargo/bin/zeroclaw' && chown '$(sq "$user"):' '$(sq "$USER_HOME")/.cargo/bin/zeroclaw'"
+    INSTALL_DIR="$(dirname "$INSTALL_PATH")"
+    remote "sudo mkdir -p '$(sq "$INSTALL_DIR")' && sudo cp '${REMOTE_DIR}/zeroclaw' '$(sq "$INSTALL_PATH")' && sudo chmod 755 '$(sq "$INSTALL_PATH")' && sudo chown '$(sq "$user"):' '$(sq "$INSTALL_PATH")'"
     echo -e "  ${GREEN}✓ Binary installed${NC}"
 
     # ── Copy web dist ──
     echo -e "  ${YELLOW}▸ Installing web dist...${NC}"
-    remote "mkdir -p '$(sq "$USER_HOME")/.local/share/zeroclaw/web' && rm -rf '$(sq "$USER_HOME")/.local/share/zeroclaw/web/dist' && cp -r '${REMOTE_DIR}/web/dist' '$(sq "$USER_HOME")/.local/share/zeroclaw/web/dist' && chown -R '$(sq "$user"):' '$(sq "$USER_HOME")/.local/share/zeroclaw/web'"
+    remote "sudo mkdir -p '$(sq "$USER_HOME")/.local/share/zeroclaw/web' && sudo rm -rf '$(sq "$USER_HOME")/.local/share/zeroclaw/web/dist' && sudo cp -r '${REMOTE_DIR}/web/dist' '$(sq "$USER_HOME")/.local/share/zeroclaw/web/dist' && sudo chown -R '$(sq "$user"):' '$(sq "$USER_HOME")/.local/share/zeroclaw/web'"
     echo -e "  ${GREEN}✓ Web dist installed${NC}"
 
     # ── Config update ──
     CONFIG_PATH="${USER_HOME}/.zeroclaw/config.toml"
-    CONFIG_EXISTS="$(remote "test -f '$(sq "$CONFIG_PATH")' && echo yes || echo no")"
+    CONFIG_EXISTS="$(remote "sudo test -f '$(sq "$CONFIG_PATH")' && echo yes || echo no")"
 
     if [[ "$CONFIG_EXISTS" == "no" ]]; then
         echo -e "  ${YELLOW}⚠ config.toml not found — skipping config update${NC}"
         STATUS="warn"
         ((WARN_COUNT++)) || true
     else
-        HAS_KEY="$(remote "grep -c 'process_audio_without_transcription' '$(sq "$CONFIG_PATH")' 2>/dev/null || echo 0")"
+        HAS_KEY="$(remote "sudo grep -c 'process_audio_without_transcription' '$(sq "$CONFIG_PATH")' 2>/dev/null || echo 0")"
         if [[ "$HAS_KEY" -gt 0 ]]; then
             echo -e "  ${GREEN}✓ process_audio_without_transcription already present${NC}"
         else
             echo -e "  ${YELLOW}▸ Adding process_audio_without_transcription...${NC}"
-            # Back up config first
-            remote "cp '$(sq "$CONFIG_PATH")' '$(sq "$CONFIG_PATH").bak.$(date +%s)'"
+            # [L-2] Add randomness to config backup filename (remote $RANDOM)
+            remote "sudo cp '$(sq "$CONFIG_PATH")' \"$(sq "$CONFIG_PATH").bak.\$(date +%s)-\$RANDOM\""
 
-            HAS_SECTION="$(remote "grep -c '^\[channels\.telegram\.default\]' '$(sq "$CONFIG_PATH")' 2>/dev/null || echo 0")"
+            HAS_SECTION="$(remote "sudo grep -c '^\[channels\.telegram\.default\]' '$(sq "$CONFIG_PATH")' 2>/dev/null || echo 0")"
             if [[ "$HAS_SECTION" -gt 0 ]]; then
                 # Insert key after existing section header
-                remote "sed -i '/^\[channels\.telegram\.default\]/a process_audio_without_transcription = true' '$(sq "$CONFIG_PATH")'"
+                remote "sudo sed -i '/^\[channels\.telegram\.default\]/a process_audio_without_transcription = true' '$(sq "$CONFIG_PATH")'"
             else
                 # Append new section
-                remote "cat >> '$(sq "$CONFIG_PATH")' <<'TOML'
+                remote "sudo tee -a '$(sq "$CONFIG_PATH")' > /dev/null <<'TOML'
 
 [channels.telegram.default]
 process_audio_without_transcription = true
 TOML"
             fi
-            remote "chown '$(sq "$user"):' '$(sq "$CONFIG_PATH")'"
+            remote "sudo chown '$(sq "$user"):' '$(sq "$CONFIG_PATH")'"
             echo -e "  ${GREEN}✓ Config updated${NC}"
         fi
     fi
 
+    # [M-4] Check and enable linger for systemd --user
+    LINGER="$(remote "sudo loginctl show-user '$(sq "$user")' -p Linger --value 2>/dev/null || echo 'unknown'")"
+    if [[ "$LINGER" != "yes" ]]; then
+        echo -e "  ${YELLOW}⚠ User linger not enabled — enabling for systemd --user...${NC}"
+        remote "sudo loginctl enable-linger '$(sq "$user")'"
+    fi
+
     # ── Restart systemd service ──
-    SVC_EXISTS="$(remote "sudo -u '$(sq "$user")' XDG_RUNTIME_DIR=/run/user/\$(id -u '$(sq "$user")') systemctl --user status zeroclaw &>/dev/null && echo yes || echo no")"
+    # [M-3] Wrap in env for reliable variable expansion with sudo -u
+    SVC_EXISTS="$(remote "sudo -u '$(sq "$user")' env XDG_RUNTIME_DIR=/run/user/\$(id -u '$(sq "$user")') systemctl --user status zeroclaw &>/dev/null && echo yes || echo no")"
     if [[ "$SVC_EXISTS" == "no" ]]; then
         echo -e "  ${YELLOW}⚠ systemd user service not found — skipping restart${NC}"
         if [[ "$STATUS" == "ok" ]]; then STATUS="warn"; fi
         ((WARN_COUNT++)) || true
     else
         echo -e "  ${YELLOW}▸ Restarting zeroclaw service...${NC}"
-        remote "sudo -u '$(sq "$user")' XDG_RUNTIME_DIR=/run/user/\$(id -u '$(sq "$user")') systemctl --user restart zeroclaw"
+        remote "sudo -u '$(sq "$user")' env XDG_RUNTIME_DIR=/run/user/\$(id -u '$(sq "$user")') systemctl --user restart zeroclaw"
         echo -e "  ${GREEN}✓ Service restarted${NC}"
     fi
 
     if [[ "$STATUS" == "ok" ]]; then
         echo -e "  ${GREEN}✅ ${user}: upgrade complete${NC}"
-        RESULTS+=("${user}: ✅ success (backup: /tmp/zeroclaw-backups/${BACKUP_NAME})")
+        RESULTS+=("${user}: ✅ success (backup: /var/lib/zeroclaw-backups/${BACKUP_NAME})")
         ((SUCCESS_COUNT++)) || true
     else
         echo -e "  ${YELLOW}⚠️  ${user}: upgrade complete with warnings${NC}"
@@ -226,7 +277,7 @@ done
 
 # ── Phase 3: Cleanup ────────────────────────────────────────────────────────
 echo -e "\n${CYAN}${BOLD}═══ Phase 3: Cleanup ═══${NC}"
-remote "rm -rf '${REMOTE_DIR}' /tmp/zeroclaw-upgrade.tar.gz /tmp/zeroclaw-sha256sums"
+remote "sudo rm -rf '${REMOTE_DIR}' /tmp/zeroclaw-upgrade.tar.gz /tmp/zeroclaw-sha256sums"
 echo -e "${GREEN}✓ Temporary files removed${NC}"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
@@ -236,4 +287,10 @@ for r in "${RESULTS[@]}"; do
 done
 echo ""
 echo -e "  ${GREEN}Success: ${SUCCESS_COUNT}${NC}  ${YELLOW}Warnings: ${WARN_COUNT}${NC}  ${RED}Errors: ${ERROR_COUNT}${NC}"
+
+# [M-8] Print rollback command hint
+if [[ -n "${LAST_BACKUP_NAME:-}" ]]; then
+    echo -e "\n  ${CYAN}To rollback:${NC}"
+    echo -e "  ./scripts/rollback-fork.sh --host ${HOST} --user ${SSH_USER} --users ${USERS} --backup-path /var/lib/zeroclaw-backups/${LAST_BACKUP_NAME}"
+fi
 echo ""

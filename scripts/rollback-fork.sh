@@ -15,6 +15,7 @@ SSH_USER=""
 USERS=""
 BACKUP_PATH=""
 SUCCESS_COUNT=0
+WARN_COUNT=0
 ERROR_COUNT=0
 declare -a RESULTS=()
 
@@ -39,7 +40,7 @@ ${BOLD}Optional:${NC}
 
 ${BOLD}Example:${NC}
   rollback-fork.sh --host vps.example.com --user root --users cosita,espinas,fury \\
-    --backup-path /root/zeroclaw-backups/zeroclaw-v0.2.9
+    --backup-path /var/lib/zeroclaw-backups/zeroclaw-v0.2.9
 EOF
     exit 0
 }
@@ -69,7 +70,8 @@ if [[ -z "$HOST" || -z "$SSH_USER" || -z "$USERS" || -z "$BACKUP_PATH" ]]; then
     exit 1
 fi
 
-SSH_OPTS=(-o StrictHostKeyChecking=yes -o ConnectTimeout=10)
+# [H-1] accept-new auto-accepts NEW keys but rejects CHANGED keys
+SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
 if [[ -n "$SSH_KEY" ]]; then
     SSH_OPTS+=(-i "$SSH_KEY")
 fi
@@ -77,7 +79,7 @@ fi
 # ── Cleanup trap ─────────────────────────────────────────────────────────────
 cleanup() {
     # shellcheck disable=SC2086
-    ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" "rm -rf /tmp/zeroclaw-upgrade" 2>/dev/null || true
+    ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" "sudo rm -rf /tmp/zeroclaw-upgrade" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -97,8 +99,24 @@ if ! remote "true"; then
 fi
 echo -e "${GREEN}✓ SSH connection OK${NC}"
 
+# [M-1] Check sudo access — prevents silent hang
+echo -e "${YELLOW}▸ Checking sudo access...${NC}"
+if ! remote "sudo -n true" 2>/dev/null; then
+    echo -e "${RED}Error: SSH user '${SSH_USER}' requires a password for sudo.${NC}" >&2
+    echo "Configure NOPASSWD in /etc/sudoers for this user." >&2
+    exit 1
+fi
+echo -e "${GREEN}✓ sudo access OK${NC}"
+
+# [M-7] Architecture guard — only x86_64 tarball available
+REMOTE_ARCH="$(remote "uname -m")"
+if [[ "$REMOTE_ARCH" != "x86_64" ]]; then
+    echo -e "${RED}❌ VPS architecture is ${REMOTE_ARCH}, but only x86_64 tarball is available.${NC}" >&2
+    exit 1
+fi
+
 echo -e "${YELLOW}▸ Verifying backup binary exists...${NC}"
-if ! remote "test -x '$(sq "$BACKUP_PATH")'"; then
+if ! remote "sudo test -x '$(sq "$BACKUP_PATH")'"; then
     echo -e "${RED}❌ Backup binary not found or not executable at '${BACKUP_PATH}'${NC}" >&2
     exit 1
 fi
@@ -128,19 +146,42 @@ for user in "${USER_LIST[@]}"; do
 
     USER_HOME="$(remote "getent passwd '$(sq "$user")' | cut -d: -f6")"
 
+    # [M-5] Read actual binary path from the service unit
+    INSTALL_PATH="$(remote "sudo -u '$(sq "$user")' env XDG_RUNTIME_DIR=/run/user/\$(id -u '$(sq "$user")') systemctl --user show zeroclaw -p ExecStart --value 2>/dev/null | awk '{print \$1}'")"
+    if [[ -n "$INSTALL_PATH" ]]; then
+        echo -e "  ${CYAN}Service binary path: ${INSTALL_PATH}${NC}"
+    else
+        INSTALL_PATH="${USER_HOME}/.cargo/bin/zeroclaw"
+        echo -e "  ${YELLOW}⚠ Could not determine service binary path — using default: ${INSTALL_PATH}${NC}"
+    fi
+
     # ── Restore binary ──
     echo -e "  ${YELLOW}▸ Restoring binary...${NC}"
-    remote "mkdir -p '$(sq "$USER_HOME")/.cargo/bin' && cp '$(sq "$BACKUP_PATH")' '$(sq "$USER_HOME")/.cargo/bin/zeroclaw' && chmod 755 '$(sq "$USER_HOME")/.cargo/bin/zeroclaw' && chown '$(sq "$user"):' '$(sq "$USER_HOME")/.cargo/bin/zeroclaw'"
+    INSTALL_DIR="$(dirname "$INSTALL_PATH")"
+    remote "sudo mkdir -p '$(sq "$INSTALL_DIR")' && sudo cp '$(sq "$BACKUP_PATH")' '$(sq "$INSTALL_PATH")' && sudo chmod 755 '$(sq "$INSTALL_PATH")' && sudo chown '$(sq "$user"):' '$(sq "$INSTALL_PATH")'"
     echo -e "  ${GREEN}✓ Binary restored${NC}"
 
+    # [M-6] Restore web/dist if backup exists
+    remote "sudo cp -r '$(sq "$BACKUP_PATH")-web-dist' '$(sq "$USER_HOME")/.local/share/zeroclaw/web/dist' 2>/dev/null && sudo chown -R '$(sq "$user"):' '$(sq "$USER_HOME")/.local/share/zeroclaw/web' || echo 'no web dist backup to restore'"
+
+    # [M-4] Check and enable linger for systemd --user
+    LINGER="$(remote "sudo loginctl show-user '$(sq "$user")' -p Linger --value 2>/dev/null || echo 'unknown'")"
+    if [[ "$LINGER" != "yes" ]]; then
+        echo -e "  ${YELLOW}⚠ User linger not enabled — enabling for systemd --user...${NC}"
+        remote "sudo loginctl enable-linger '$(sq "$user")'"
+    fi
+
     # ── Restart systemd service ──
-    SVC_EXISTS="$(remote "sudo -u '$(sq "$user")' XDG_RUNTIME_DIR=/run/user/\$(id -u '$(sq "$user")') systemctl --user status zeroclaw &>/dev/null && echo yes || echo no")"
+    # [M-3] Wrap in env for reliable variable expansion with sudo -u
+    SVC_EXISTS="$(remote "sudo -u '$(sq "$user")' env XDG_RUNTIME_DIR=/run/user/\$(id -u '$(sq "$user")') systemctl --user status zeroclaw &>/dev/null && echo yes || echo no")"
     if [[ "$SVC_EXISTS" == "no" ]]; then
         echo -e "  ${YELLOW}⚠ systemd user service not found — skipping restart${NC}"
+        # [L-3] Track warnings separately instead of misleading success count
+        ((WARN_COUNT++)) || true
         RESULTS+=("${user}: ⚠️  binary restored, service not restarted")
     else
         echo -e "  ${YELLOW}▸ Restarting zeroclaw service...${NC}"
-        remote "sudo -u '$(sq "$user")' XDG_RUNTIME_DIR=/run/user/\$(id -u '$(sq "$user")') systemctl --user restart zeroclaw"
+        remote "sudo -u '$(sq "$user")' env XDG_RUNTIME_DIR=/run/user/\$(id -u '$(sq "$user")') systemctl --user restart zeroclaw"
         echo -e "  ${GREEN}✓ Service restarted${NC}"
         echo -e "  ${GREEN}✅ ${user}: rollback complete${NC}"
         RESULTS+=("${user}: ✅ success")
@@ -154,5 +195,5 @@ for r in "${RESULTS[@]}"; do
     echo -e "  $r"
 done
 echo ""
-echo -e "  ${GREEN}Success: ${SUCCESS_COUNT}${NC}  ${RED}Errors: ${ERROR_COUNT}${NC}"
+echo -e "  ${GREEN}Success: ${SUCCESS_COUNT}${NC}  ${YELLOW}Warnings: ${WARN_COUNT}${NC}  ${RED}Errors: ${ERROR_COUNT}${NC}"
 echo ""
