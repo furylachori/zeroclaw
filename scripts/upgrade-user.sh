@@ -159,6 +159,14 @@ echo -e "\n${CYAN}${BOLD}═══ Phase 3: Install ═══${NC}"
 echo -e "${YELLOW}▸ Installing binary...${NC}"
 INSTALL_DIR="$(dirname "$INSTALL_PATH")"
 mkdir -p "$INSTALL_DIR"
+
+# Stop service before replacing binary
+if systemctl --user is-active zeroclaw &>/dev/null; then
+    echo -e "${YELLOW}▸ Stopping zeroclaw service...${NC}"
+    systemctl --user stop zeroclaw
+    echo -e "${GREEN}✓ Service stopped${NC}"
+fi
+
 cp "${EXTRACT_DIR}/zeroclaw" "$INSTALL_PATH"
 chmod 755 "$INSTALL_PATH"
 echo -e "${GREEN}✓ Binary installed to ${INSTALL_PATH}${NC}"
