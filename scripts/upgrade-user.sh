@@ -219,6 +219,22 @@ TOML
             echo -e "${GREEN}✓ Channel binding added${NC}"
         fi
     fi
+
+    # Fix: warn about port conflicts on multi-user VPS
+    if grep -q '^\[gateway\]' "$CONFIG_PATH" 2>/dev/null; then
+        CURRENT_PORT=$(grep -A10 '^\[gateway\]' "$CONFIG_PATH" | grep '^port' | awk '{print $3}' | tr -d '"')
+    else
+        CURRENT_PORT=""
+    fi
+    if [[ -z "$CURRENT_PORT" || "$CURRENT_PORT" == "42617" ]]; then
+        # Check if another zeroclaw is already using the default port
+        if ss -tlnp 2>/dev/null | grep -q ":42617 "; then
+            echo -e "${YELLOW}⚠ Default port 42617 is already in use by another zeroclaw instance${NC}"
+            echo -e "${YELLOW}  Add a unique port to ~/.zeroclaw/config.toml:${NC}"
+            echo -e "${YELLOW}  [gateway]${NC}"
+            echo -e "${YELLOW}  port = $((42617 + RANDOM % 1000))${NC}"
+        fi
+    fi
 fi
 
 # ── Phase 5: Restart ────────────────────────────────────────────────────────
