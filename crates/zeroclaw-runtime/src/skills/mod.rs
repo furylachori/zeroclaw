@@ -1179,28 +1179,28 @@ fn write_xml_text_element(out: &mut String, indent: usize, tag: &str, value: &st
     out.push_str(">\n");
 }
 
-fn resolve_skill_location(skill: &Skill, workspace_dir: &Path) -> PathBuf {
+fn resolve_skill_location(skill: &Skill, skills_base_dir: &Path) -> PathBuf {
     skill.location.clone().unwrap_or_else(|| {
-        workspace_dir
+        skills_base_dir
             .join("skills")
             .join(&skill.name)
             .join("SKILL.md")
     })
 }
 
-fn render_skill_location(skill: &Skill, workspace_dir: &Path, prefer_relative: bool) -> String {
-    let location = resolve_skill_location(skill, workspace_dir);
-    if prefer_relative && let Ok(relative) = location.strip_prefix(workspace_dir) {
+fn render_skill_location(skill: &Skill, skills_base_dir: &Path, prefer_relative: bool) -> String {
+    let location = resolve_skill_location(skill, skills_base_dir);
+    if prefer_relative && let Ok(relative) = location.strip_prefix(skills_base_dir) {
         return relative.display().to_string();
     }
     location.display().to_string()
 }
 
 /// Build the "Available Skills" system prompt section with full skill instructions.
-pub fn skills_to_prompt(skills: &[Skill], workspace_dir: &Path) -> String {
+pub fn skills_to_prompt(skills: &[Skill], skills_base_dir: &Path) -> String {
     skills_to_prompt_with_mode(
         skills,
-        workspace_dir,
+        skills_base_dir,
         zeroclaw_config::schema::SkillsPromptInjectionMode::Full,
     )
 }
@@ -1208,7 +1208,7 @@ pub fn skills_to_prompt(skills: &[Skill], workspace_dir: &Path) -> String {
 /// Build the "Available Skills" system prompt section with configurable verbosity.
 pub fn skills_to_prompt_with_mode(
     skills: &[Skill],
-    workspace_dir: &Path,
+    skills_base_dir: &Path,
     mode: zeroclaw_config::schema::SkillsPromptInjectionMode,
 ) -> String {
     use std::fmt::Write;
@@ -1239,7 +1239,7 @@ pub fn skills_to_prompt_with_mode(
         write_xml_text_element(&mut prompt, 4, "description", &skill.description);
         let location = render_skill_location(
             skill,
-            workspace_dir,
+            skills_base_dir,
             matches!(
                 mode,
                 zeroclaw_config::schema::SkillsPromptInjectionMode::Compact

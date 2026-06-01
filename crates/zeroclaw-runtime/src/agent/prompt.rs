@@ -18,6 +18,11 @@ pub struct PromptContext<'a> {
     /// ACP sessions pass the agent's own dir here while letting `workspace_dir`
     /// follow the session cwd.
     pub agent_workspace_dir: &'a Path,
+    /// Base directory for skill location resolution (typically
+    /// `config.shared_workspace_dir()`). Skill files live under
+    /// `<skills_base_dir>/skills/`. Separate from `workspace_dir` because
+    /// skills were relocated to the shared workspace in the V3 migration.
+    pub skills_base_dir: &'a Path,
     pub model_name: &'a str,
     pub tools: &'a [Box<dyn Tool>],
     pub skills: &'a [Skill],
@@ -235,7 +240,7 @@ impl PromptSection for SkillsSection {
     fn build(&self, ctx: &PromptContext<'_>) -> Result<String> {
         Ok(crate::skills::skills_to_prompt_with_mode(
             ctx.skills,
-            ctx.workspace_dir,
+            ctx.skills_base_dir,
             ctx.skills_prompt_mode,
         ))
     }
@@ -366,6 +371,7 @@ mod tests {
         let ctx = PromptContext {
             workspace_dir: &workspace,
             agent_workspace_dir: &workspace,
+            skills_base_dir: &workspace,
             model_name: "test-model",
             tools: &tools,
             skills: &[],
@@ -399,6 +405,7 @@ mod tests {
         let ctx = PromptContext {
             workspace_dir: Path::new("/tmp"),
             agent_workspace_dir: Path::new("/tmp"),
+            skills_base_dir: Path::new("/tmp"),
             model_name: "test-model",
             tools: &tools,
             skills: &[],
@@ -422,6 +429,7 @@ mod tests {
         let ctx = PromptContext {
             workspace_dir: Path::new("/tmp"),
             agent_workspace_dir: Path::new("/tmp"),
+            skills_base_dir: Path::new("/tmp"),
             model_name: "test-model",
             tools: &tools,
             skills: &[],
@@ -445,6 +453,7 @@ mod tests {
         let ctx = PromptContext {
             workspace_dir: Path::new("/tmp"),
             agent_workspace_dir: Path::new("/tmp"),
+            skills_base_dir: Path::new("/tmp"),
             model_name: "test-model",
             tools: &tools,
             skills: &[],
@@ -491,6 +500,7 @@ mod tests {
         let ctx = PromptContext {
             workspace_dir: Path::new("/tmp"),
             agent_workspace_dir: Path::new("/tmp"),
+            skills_base_dir: Path::new("/tmp"),
             model_name: "test-model",
             tools: &tools,
             skills: &skills,
@@ -535,6 +545,7 @@ mod tests {
         let ctx = PromptContext {
             workspace_dir: Path::new("/tmp/workspace"),
             agent_workspace_dir: Path::new("/tmp/workspace"),
+            skills_base_dir: Path::new("/tmp/workspace"),
             model_name: "test-model",
             tools: &tools,
             skills: &skills,
@@ -565,6 +576,7 @@ mod tests {
         let ctx = PromptContext {
             workspace_dir: Path::new("/tmp"),
             agent_workspace_dir: Path::new("/tmp"),
+            skills_base_dir: Path::new("/tmp"),
             model_name: "test-model",
             tools: &tools,
             skills: &[],
@@ -608,6 +620,7 @@ mod tests {
         let ctx = PromptContext {
             workspace_dir: Path::new("/tmp/workspace"),
             agent_workspace_dir: Path::new("/tmp/workspace"),
+            skills_base_dir: Path::new("/tmp/workspace"),
             model_name: "test-model",
             tools: &tools,
             skills: &skills,
@@ -644,6 +657,7 @@ mod tests {
         let ctx = PromptContext {
             workspace_dir: Path::new("/tmp"),
             agent_workspace_dir: Path::new("/tmp"),
+            skills_base_dir: Path::new("/tmp"),
             model_name: "test-model",
             tools: &tools,
             skills: &[],
@@ -681,6 +695,7 @@ mod tests {
         let ctx = PromptContext {
             workspace_dir: Path::new("/tmp"),
             agent_workspace_dir: Path::new("/tmp"),
+            skills_base_dir: Path::new("/tmp"),
             model_name: "test-model",
             tools: &tools,
             skills: &[],
@@ -710,6 +725,7 @@ mod tests {
         let ctx = PromptContext {
             workspace_dir: Path::new("/tmp"),
             agent_workspace_dir: Path::new("/tmp"),
+            skills_base_dir: Path::new("/tmp"),
             model_name: "test-model",
             tools: &tools,
             skills: &[],
@@ -747,6 +763,7 @@ mod tests {
         let ctx = PromptContext {
             workspace_dir: Path::new("/tmp"),
             agent_workspace_dir: Path::new("/tmp"),
+            skills_base_dir: Path::new("/tmp"),
             model_name: "test-model",
             tools: &tools,
             skills: &[],

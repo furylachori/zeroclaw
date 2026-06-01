@@ -61,6 +61,11 @@ pub struct Agent {
     security_summary: Option<String>,
     /// Autonomy level from config; controls safety prompt instructions.
     autonomy_level: crate::security::AutonomyLevel,
+    /// Base directory for skill location resolution (`config.shared_workspace_dir()`).
+    /// Skill files live under `<shared_workspace_dir>/skills/`. Separate from
+    /// `workspace_dir` because skills were relocated to the shared workspace
+    /// in the V3 migration.
+    shared_workspace_dir: std::path::PathBuf,
     /// Activated MCP tools for deferred loading mode.
     /// When MCP deferred loading is enabled, tools are activated via `tool_search`
     /// and stored here for lookup during tool execution.
@@ -170,6 +175,7 @@ pub struct AgentBuilder {
     response_cache: Option<Arc<zeroclaw_memory::response_cache::ResponseCache>>,
     security_summary: Option<String>,
     autonomy_level: Option<crate::security::AutonomyLevel>,
+    shared_workspace_dir: Option<std::path::PathBuf>,
     activated_tools: Option<Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     hook_runner: Option<Arc<crate::hooks::HookRunner>>,
     approval_manager: Option<Arc<ApprovalManager>>,
@@ -210,6 +216,7 @@ impl AgentBuilder {
             response_cache: None,
             security_summary: None,
             autonomy_level: None,
+            shared_workspace_dir: None,
             activated_tools: None,
             hook_runner: None,
             approval_manager: None,
@@ -361,6 +368,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn shared_workspace_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.shared_workspace_dir = Some(dir);
+        self
+    }
+
     pub fn activated_tools(
         mut self,
         activated: Option<Arc<std::sync::Mutex<tools::ActivatedToolSet>>>,
@@ -481,6 +493,11 @@ impl AgentBuilder {
             autonomy_level: self
                 .autonomy_level
                 .unwrap_or(crate::security::AutonomyLevel::Supervised),
+            shared_workspace_dir: self.shared_workspace_dir.unwrap_or_else(|| {
+                self.workspace_dir
+                    .clone()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+            }),
             activated_tools: self.activated_tools,
             hook_runner: self.hook_runner,
             approval_manager: self.approval_manager,
@@ -1033,7 +1050,11 @@ impl Agent {
         // Bundle-aware so `[agents.<alias>].skill_bundles` aliases resolve
         // through to `[skill_bundles.<alias>].directory` (defaulting to
         // `<install>/shared/skills/<alias>/`).
-        let skills = crate::skills::load_skills_for_agent(&config.data_dir, config, agent_alias);
+        let skills = crate::skills::load_skills_for_agent(
+            &config.shared_workspace_dir(),
+            config,
+            agent_alias,
+        );
         tools::register_skill_tools(&mut tools, &skills, security.clone());
 
         let approval_manager = if approval_backchannel {
@@ -1065,6 +1086,7 @@ impl Agent {
             )
             .workspace_dir(security.workspace_dir.clone())
             .agent_workspace_dir(agent_workspace.clone())
+            .shared_workspace_dir(config.shared_workspace_dir())
             .classification_config(config.query_classification.clone())
             .available_hints(available_hints)
             .route_model_by_hint(route_model_by_hint)
@@ -1159,6 +1181,7 @@ impl Agent {
         let ctx = PromptContext {
             workspace_dir: &self.workspace_dir,
             agent_workspace_dir: &self.agent_workspace_dir,
+            skills_base_dir: &self.shared_workspace_dir,
             model_name: &self.model_name,
             tools: prompt_tools,
             skills: &self.skills,

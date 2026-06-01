@@ -58,6 +58,7 @@ pub fn build_system_prompt(
     skills: &[Skill],
     identity_config: Option<&zeroclaw_config::schema::IdentityConfig>,
     bootstrap_max_chars: Option<usize>,
+    skills_base_dir: &std::path::Path,
 ) -> String {
     build_system_prompt_with_mode(
         workspace_dir,
@@ -69,6 +70,7 @@ pub fn build_system_prompt(
         false,
         zeroclaw_config::schema::SkillsPromptInjectionMode::Full,
         AutonomyLevel::default(),
+        skills_base_dir,
     )
 }
 
@@ -82,6 +84,7 @@ pub fn build_system_prompt_with_mode(
     native_tools: bool,
     skills_prompt_mode: zeroclaw_config::schema::SkillsPromptInjectionMode,
     autonomy_level: AutonomyLevel,
+    skills_base_dir: &std::path::Path,
 ) -> String {
     let autonomy_cfg = zeroclaw_config::schema::RiskProfileConfig {
         level: autonomy_level,
@@ -99,6 +102,7 @@ pub fn build_system_prompt_with_mode(
         skills_prompt_mode,
         false,
         0,
+        skills_base_dir,
     )
 }
 
@@ -115,6 +119,7 @@ pub fn build_system_prompt_with_mode_and_autonomy(
     skills_prompt_mode: zeroclaw_config::schema::SkillsPromptInjectionMode,
     compact_context: bool,
     max_system_prompt_chars: usize,
+    skills_base_dir: &std::path::Path,
 ) -> String {
     use std::fmt::Write;
     let mut prompt = String::with_capacity(8192);
@@ -237,7 +242,7 @@ pub fn build_system_prompt_with_mode_and_autonomy(
     if !skills.is_empty() {
         prompt.push_str(&crate::skills::skills_to_prompt_with_mode(
             skills,
-            workspace_dir,
+            skills_base_dir,
             skills_prompt_mode,
         ));
         prompt.push_str("\n\n");

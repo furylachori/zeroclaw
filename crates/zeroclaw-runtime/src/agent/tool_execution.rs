@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::approval::ApprovalManager;
 use crate::observability::{Observer, ObserverEvent};
 use crate::tools::Tool;
+use std::sync::Arc;
 
 // Items that still live in `loop_` — import via the parent module.
 use super::loop_::{ParsedToolCall, ToolLoopCancelled, scrub_credentials};
@@ -45,6 +46,7 @@ pub async fn execute_one_tool(
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     receipt_generator: Option<&super::tool_receipts::ReceiptGenerator>,
+    audit_logger: Option<&Arc<crate::security::audit::AuditLogger>>,
 ) -> Result<ToolExecutionOutcome> {
     // Serialize arguments once and carry the full JSON into both observer
     // events. Previously the start event received a 300-char summary and the
@@ -155,6 +157,17 @@ pub async fn execute_one_tool(
                     arguments: Some(full_args.clone()),
                     result: Some(output.clone()),
                 });
+                if let Some(logger) = audit_logger {
+                    let _ = logger.log_command(
+                        "channel",
+                        call_name,
+                        "unknown",
+                        true,
+                        true,
+                        true,
+                        duration.as_millis() as u64,
+                    );
+                }
                 Ok(ToolExecutionOutcome {
                     output,
                     success: true,
@@ -252,6 +265,7 @@ pub async fn execute_tools_parallel(
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     receipt_generator: Option<&super::tool_receipts::ReceiptGenerator>,
+    audit_logger: Option<&Arc<crate::security::audit::AuditLogger>>,
 ) -> Result<Vec<ToolExecutionOutcome>> {
     let futures: Vec<_> = tool_calls
         .iter()
@@ -265,6 +279,7 @@ pub async fn execute_tools_parallel(
                 observer,
                 cancellation_token,
                 receipt_generator,
+                audit_logger,
             )
         })
         .collect();
@@ -282,6 +297,7 @@ pub async fn execute_tools_sequential(
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     receipt_generator: Option<&super::tool_receipts::ReceiptGenerator>,
+    audit_logger: Option<&Arc<crate::security::audit::AuditLogger>>,
 ) -> Result<Vec<ToolExecutionOutcome>> {
     let mut outcomes = Vec::with_capacity(tool_calls.len());
 
@@ -296,6 +312,7 @@ pub async fn execute_tools_sequential(
                 observer,
                 cancellation_token,
                 receipt_generator,
+                audit_logger,
             )
             .await?,
         );

@@ -428,6 +428,7 @@ struct ChannelRuntimeContext {
     /// `Tool receipts:` block sent after the main reply.
     show_receipts_in_response: bool,
     last_applied_config_stamp: Arc<Mutex<Option<ConfigFileStamp>>>,
+    audit_logger: Option<std::sync::Arc<zeroclaw_runtime::security::audit::AuditLogger>>,
 }
 
 #[derive(Clone)]
@@ -1262,7 +1263,7 @@ fn refreshed_new_session_system_prompt(ctx: &ChannelRuntimeContext) -> String {
             ctx.workspace_dir.as_ref(),
             ctx.prompt_config.as_ref(),
         ),
-        ctx.workspace_dir.as_ref(),
+        &ctx.prompt_config.shared_workspace_dir(),
         ctx.prompt_config.skills.prompt_injection_mode,
     );
     replace_available_skills_section(ctx.system_prompt.as_str(), &refreshed_skills)
@@ -4062,6 +4063,7 @@ async fn process_channel_message_body(
                         ctx.receipt_generator
                             .as_ref()
                             .map(|_| tool_receipts_collector.as_ref()),
+                        ctx.audit_logger.clone(),
                     ),
                     ),
                     ),
@@ -5123,7 +5125,11 @@ fn build_channel_by_id(
                     .with_transcription(config.transcription.clone())
                     .with_tts(&config)
                     .with_workspace_dir(config.data_dir.clone())
-                    .with_approval_timeout_secs(tg.approval_timeout_secs),
+                    .with_approval_timeout_secs(tg.approval_timeout_secs)
+                    .with_process_audio_without_transcription(
+                        tg.process_audio_without_transcription,
+                    )
+                    .with_save_transcribed_audio(tg.save_transcribed_audio),
             ))
         }
         #[cfg(not(feature = "channel-telegram"))]
@@ -5932,7 +5938,9 @@ fn collect_configured_channels(
                 .with_workspace_dir(config.channel_workspace_dir(&format!("telegram.{alias}")))
                 .with_proxy_url(tg.proxy_url.clone())
                 .with_tool_command_specs(tool_specs.to_vec())
-                .with_approval_timeout_secs(tg.approval_timeout_secs),
+                .with_approval_timeout_secs(tg.approval_timeout_secs)
+                .with_process_audio_without_transcription(tg.process_audio_without_transcription)
+                .with_save_transcribed_audio(tg.save_transcribed_audio),
             ),
         });
     }
@@ -7516,7 +7524,7 @@ pub async fn start_channels(
             );
         }
 
-        let security = Arc::new(SecurityPolicy::for_agent(&config, agent_alias)?);
+        let security = Arc::new(SecurityPolicy::for_agent(&config, agent_alias, None)?);
         let model = agent_provider_entry
             .and_then(|e| e.model.clone())
             .or_else(|| {
@@ -7798,6 +7806,7 @@ pub async fn start_channels(
             config.skills.prompt_injection_mode,
             agent.compact_context,
             agent.max_system_prompt_chars,
+            &config.shared_workspace_dir(),
         );
         if expose_text_tool_protocol {
             system_prompt.push_str(&build_tool_instructions_for_names(
@@ -8148,6 +8157,7 @@ pub async fn start_channels(
             },
             show_receipts_in_response: agent.tool_receipts.show_in_response,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         agent_ctxs.insert(agent_alias.clone(), runtime_ctx);
@@ -8860,6 +8870,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         })
     }
 
@@ -9535,6 +9546,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         };
 
         assert!(compact_sender_history(&ctx, &sender));
@@ -9667,6 +9679,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         };
 
         append_sender_turn(&ctx, &sender, ChatMessage::user("hello"));
@@ -9756,6 +9769,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
@@ -9863,6 +9877,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         };
 
         assert!(rollback_orphan_user_turn(
@@ -10661,6 +10676,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -10767,6 +10783,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
             agent_cfg: Arc::new(zeroclaw_config::schema::AliasedAgentConfig::default()),
             agent_transcription_provider: String::new(),
         });
@@ -10885,6 +10902,7 @@ BTC is currently around $65,000 based on latest tool output."#
             ),
             show_receipts_in_response: true,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
             agent_cfg: Arc::new(zeroclaw_config::schema::AliasedAgentConfig::default()),
             agent_transcription_provider: String::new(),
         });
@@ -11026,6 +11044,7 @@ BTC is currently around $65,000 based on latest tool output."#
             ),
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
             agent_cfg: Arc::new(zeroclaw_config::schema::AliasedAgentConfig::default()),
             agent_transcription_provider: String::new(),
         });
@@ -11136,6 +11155,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
             agent_cfg: Arc::new(zeroclaw_config::schema::AliasedAgentConfig::default()),
             agent_transcription_provider: String::new(),
         });
@@ -11264,6 +11284,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -11378,6 +11399,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -11477,6 +11499,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -11589,6 +11612,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -11727,6 +11751,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -11846,6 +11871,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -11943,6 +11969,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -12047,6 +12074,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -12407,6 +12435,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(4);
@@ -12540,6 +12569,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
@@ -12683,6 +12713,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
@@ -12823,6 +12854,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
@@ -12941,6 +12973,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -13040,6 +13073,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -13083,7 +13117,8 @@ BTC is currently around $65,000 based on latest tool output."#
     fn prompt_contains_all_sections() {
         let ws = make_workspace();
         let tools = vec![("shell", "Run commands"), ("file_read", "Read files")];
-        let prompt = build_system_prompt(ws.path(), "test-model", &tools, &[], None, None);
+        let prompt =
+            build_system_prompt(ws.path(), "test-model", &tools, &[], None, None, ws.path());
 
         // Section headers
         assert!(prompt.contains("## Tools"), "missing Tools section");
@@ -13107,7 +13142,7 @@ BTC is currently around $65,000 based on latest tool output."#
             ("shell", "Run commands"),
             ("memory_recall", "Search memory"),
         ];
-        let prompt = build_system_prompt(ws.path(), "gpt-4o", &tools, &[], None, None);
+        let prompt = build_system_prompt(ws.path(), "gpt-4o", &tools, &[], None, None, ws.path());
 
         assert!(prompt.contains("**shell**"));
         assert!(prompt.contains("Run commands"));
@@ -13118,7 +13153,8 @@ BTC is currently around $65,000 based on latest tool output."#
     fn prompt_includes_single_tool_protocol_block_after_append() {
         let ws = make_workspace();
         let tools = vec![("shell", "Run commands")];
-        let mut prompt = build_system_prompt(ws.path(), "gpt-4o", &tools, &[], None, None);
+        let mut prompt =
+            build_system_prompt(ws.path(), "gpt-4o", &tools, &[], None, None, ws.path());
 
         assert!(
             !prompt.contains("## Tool Use Protocol"),
@@ -13156,6 +13192,7 @@ BTC is currently around $65,000 based on latest tool output."#
             zeroclaw_config::schema::SkillsPromptInjectionMode::Full,
             false,
             0,
+            ws.path(),
         );
         if expose_text_protocol {
             let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(MockPriceTool)];
@@ -13181,7 +13218,7 @@ BTC is currently around $65,000 based on latest tool output."#
     #[test]
     fn prompt_injects_safety() {
         let ws = make_workspace();
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None, ws.path());
 
         assert!(prompt.contains("Do not exfiltrate private data"));
         assert!(prompt.contains("Respect the runtime autonomy policy"));
@@ -13191,7 +13228,7 @@ BTC is currently around $65,000 based on latest tool output."#
     #[test]
     fn prompt_injects_workspace_files() {
         let ws = make_workspace();
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None, ws.path());
 
         assert!(prompt.contains("### SOUL.md"), "missing SOUL.md header");
         assert!(prompt.contains("Be helpful"), "missing SOUL content");
@@ -13218,7 +13255,7 @@ BTC is currently around $65,000 based on latest tool output."#
     fn prompt_missing_file_markers() {
         let tmp = TempDir::new().unwrap();
         // Empty workspace — no files at all
-        let prompt = build_system_prompt(tmp.path(), "model", &[], &[], None, None);
+        let prompt = build_system_prompt(tmp.path(), "model", &[], &[], None, None, tmp.path());
 
         assert!(prompt.contains("[File not found: SOUL.md]"));
         assert!(prompt.contains("[File not found: AGENTS.md]"));
@@ -13229,7 +13266,7 @@ BTC is currently around $65,000 based on latest tool output."#
     fn prompt_bootstrap_only_if_exists() {
         let ws = make_workspace();
         // No BOOTSTRAP.md — should not appear
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None, ws.path());
         assert!(
             !prompt.contains("### BOOTSTRAP.md"),
             "BOOTSTRAP.md should not appear when missing"
@@ -13237,7 +13274,7 @@ BTC is currently around $65,000 based on latest tool output."#
 
         // Create BOOTSTRAP.md — should appear
         std::fs::write(ws.path().join("BOOTSTRAP.md"), "# Bootstrap\nFirst run.").unwrap();
-        let prompt2 = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+        let prompt2 = build_system_prompt(ws.path(), "model", &[], &[], None, None, ws.path());
         assert!(
             prompt2.contains("### BOOTSTRAP.md"),
             "BOOTSTRAP.md should appear when present"
@@ -13257,7 +13294,7 @@ BTC is currently around $65,000 based on latest tool output."#
         )
         .unwrap();
 
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None, ws.path());
 
         // Daily notes should NOT be in the system prompt (on-demand via tools)
         assert!(
@@ -13273,7 +13310,15 @@ BTC is currently around $65,000 based on latest tool output."#
     #[test]
     fn prompt_runtime_metadata() {
         let ws = make_workspace();
-        let prompt = build_system_prompt(ws.path(), "claude-sonnet-4", &[], &[], None, None);
+        let prompt = build_system_prompt(
+            ws.path(),
+            "claude-sonnet-4",
+            &[],
+            &[],
+            None,
+            None,
+            ws.path(),
+        );
 
         assert!(prompt.contains("Model: claude-sonnet-4"));
         assert!(prompt.contains(&format!("OS: {}", std::env::consts::OS)));
@@ -13300,7 +13345,7 @@ BTC is currently around $65,000 based on latest tool output."#
             location: None,
         }];
 
-        let prompt = build_system_prompt(ws.path(), "model", &[], &skills, None, None);
+        let prompt = build_system_prompt(ws.path(), "model", &[], &skills, None, None, ws.path());
 
         assert!(prompt.contains("<available_skills>"), "missing skills XML");
         assert!(prompt.contains("<name>code-review</name>"));
@@ -13348,6 +13393,7 @@ BTC is currently around $65,000 based on latest tool output."#
             false,
             zeroclaw_config::schema::SkillsPromptInjectionMode::Compact,
             AutonomyLevel::default(),
+            ws.path(),
         );
 
         assert!(prompt.contains("<available_skills>"), "missing skills XML");
@@ -13386,7 +13432,7 @@ BTC is currently around $65,000 based on latest tool output."#
             location: None,
         }];
 
-        let prompt = build_system_prompt(ws.path(), "model", &[], &skills, None, None);
+        let prompt = build_system_prompt(ws.path(), "model", &[], &skills, None, None, ws.path());
 
         assert!(prompt.contains("<name>code&lt;review&gt;&amp;</name>"));
         assert!(prompt.contains(
@@ -13407,7 +13453,7 @@ BTC is currently around $65,000 based on latest tool output."#
         let big_content = "x".repeat(BOOTSTRAP_MAX_CHARS + 1000);
         std::fs::write(ws.path().join("AGENTS.md"), &big_content).unwrap();
 
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None, ws.path());
 
         assert!(
             prompt.contains("truncated at"),
@@ -13424,7 +13470,7 @@ BTC is currently around $65,000 based on latest tool output."#
         let ws = make_workspace();
         std::fs::write(ws.path().join("TOOLS.md"), "").unwrap();
 
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None, ws.path());
 
         // Empty file should not produce a header
         assert!(
@@ -13453,7 +13499,7 @@ BTC is currently around $65,000 based on latest tool output."#
     #[test]
     fn prompt_contains_channel_capabilities() {
         let ws = make_workspace();
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None, ws.path());
 
         assert!(
             prompt.contains("## Channel Capabilities"),
@@ -13488,6 +13534,7 @@ BTC is currently around $65,000 based on latest tool output."#
             zeroclaw_config::schema::SkillsPromptInjectionMode::Full,
             false,
             0,
+            ws.path(),
         );
 
         assert!(
@@ -13519,6 +13566,7 @@ BTC is currently around $65,000 based on latest tool output."#
             zeroclaw_config::schema::SkillsPromptInjectionMode::Full,
             false,
             0,
+            ws.path(),
         );
 
         assert!(
@@ -13534,7 +13582,7 @@ BTC is currently around $65,000 based on latest tool output."#
     #[test]
     fn prompt_workspace_path() {
         let ws = make_workspace();
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None, ws.path());
 
         assert!(prompt.contains(&format!("Working directory: `{}`", ws.path().display())));
     }
@@ -13552,6 +13600,7 @@ BTC is currently around $65,000 based on latest tool output."#
             false,
             zeroclaw_config::schema::SkillsPromptInjectionMode::Full,
             AutonomyLevel::Full,
+            ws.path(),
         );
 
         assert!(
@@ -13586,6 +13635,7 @@ BTC is currently around $65,000 based on latest tool output."#
             false,
             zeroclaw_config::schema::SkillsPromptInjectionMode::Full,
             AutonomyLevel::Supervised,
+            ws.path(),
         );
 
         assert!(
@@ -14179,6 +14229,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -14261,6 +14312,7 @@ BTC is currently around $65,000 based on latest tool output."#
             false,
             config.skills.prompt_injection_mode,
             AutonomyLevel::default(),
+            workspace.path(),
         );
         assert!(
             !initial_system_prompt.contains("refresh-test"),
@@ -14336,6 +14388,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -14535,6 +14588,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -14661,6 +14715,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -14859,7 +14914,15 @@ This is an example JSON object for profile settings."#;
             aieos_inline: None,
         };
 
-        let prompt = build_system_prompt(tmp.path(), "model", &[], &[], Some(&config), None);
+        let prompt = build_system_prompt(
+            tmp.path(),
+            "model",
+            &[],
+            &[],
+            Some(&config),
+            None,
+            tmp.path(),
+        );
 
         // Should contain AIEOS sections
         assert!(prompt.contains("## Identity"));
@@ -14900,6 +14963,7 @@ This is an example JSON object for profile settings."#;
             &[],
             Some(&config),
             None,
+            std::env::temp_dir().as_path(),
         );
 
         assert!(prompt.contains("**Name:** Claw"));
@@ -14917,7 +14981,8 @@ This is an example JSON object for profile settings."#;
         };
 
         let ws = make_workspace();
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], Some(&config), None);
+        let prompt =
+            build_system_prompt(ws.path(), "model", &[], &[], Some(&config), None, ws.path());
 
         // Should fall back to OpenClaw format when AIEOS file is not found
         // (Error is logged to stderr with filename, not included in prompt)
@@ -14936,7 +15001,8 @@ This is an example JSON object for profile settings."#;
         };
 
         let ws = make_workspace();
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], Some(&config), None);
+        let prompt =
+            build_system_prompt(ws.path(), "model", &[], &[], Some(&config), None, ws.path());
 
         // Should use OpenClaw format (not configured for AIEOS)
         assert!(prompt.contains("### SOUL.md"));
@@ -14954,7 +15020,8 @@ This is an example JSON object for profile settings."#;
         };
 
         let ws = make_workspace();
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], Some(&config), None);
+        let prompt =
+            build_system_prompt(ws.path(), "model", &[], &[], Some(&config), None, ws.path());
 
         // Should use OpenClaw format even if aieos_path is set
         assert!(prompt.contains("### SOUL.md"));
@@ -14966,7 +15033,7 @@ This is an example JSON object for profile settings."#;
     fn none_identity_config_uses_openclaw() {
         let ws = make_workspace();
         // Pass None for identity config
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None, ws.path());
 
         // Should use OpenClaw format
         assert!(prompt.contains("### SOUL.md"));
@@ -15389,45 +15456,6 @@ This is an example JSON object for profile settings."#;
 
     #[cfg(feature = "channel-discord")]
     #[tokio::test]
-    async fn supervised_listener_does_not_restart_on_fatal_discord_gateway_close_code() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let channel_name = format!("discord-{}", uuid::Uuid::new_v4());
-        let channel: Arc<dyn Channel> = Arc::new(FailOnceChannel {
-            name: channel_name,
-            calls: Arc::clone(&calls),
-            err: Mutex::new(Some(anyhow::Error::new(
-                crate::discord::DiscordListenerFatalError::new(
-                    "discord gateway closed with fatal code 4014: disallowed intent(s)",
-                ),
-            ))),
-        });
-
-        let component_name = format!("channel:{}", channel.name());
-        let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(1);
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let handle = spawn_supervised_listener(channel, None, tx, 1, 1, cancel.clone());
-
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        let snapshot = zeroclaw_runtime::health::snapshot_json();
-        let component = &snapshot["components"][&component_name];
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(component["status"], "error");
-        assert_eq!(component["restart_count"].as_u64().unwrap_or(0), 0);
-        assert!(
-            component["last_error"]
-                .as_str()
-                .unwrap_or("")
-                .contains("fatal code 4014")
-        );
-
-        drop(rx);
-        cancel.cancel();
-        let join = tokio::time::timeout(Duration::from_millis(500), handle).await;
-        assert!(join.is_ok(), "listener should stop on cancel");
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
     async fn fatal_discord_listener_error_does_not_stop_other_listener_health() {
         let discord_calls = Arc::new(AtomicUsize::new(0));
         let healthy_calls = Arc::new(AtomicUsize::new(0));
@@ -15658,6 +15686,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         // Simulate a photo attachment message with [IMAGE:] marker.
@@ -15764,6 +15793,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -15903,6 +15933,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
             media_pipeline: zeroclaw_config::schema::MediaPipelineConfig::default(),
             transcription_config: zeroclaw_config::schema::TranscriptionConfig::default(),
             agent_transcription_provider: String::new(),
@@ -16096,6 +16127,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -16237,6 +16269,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -16370,6 +16403,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -16523,6 +16557,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         process_channel_message(
@@ -16603,6 +16638,8 @@ This is an example JSON object for profile settings."#;
                 proxy_url: None,
                 approval_timeout_secs: 120,
                 excluded_tools: vec![],
+                process_audio_without_transcription: false,
+                save_transcribed_audio: false,
             },
         );
         let config_arc = Arc::new(RwLock::new(config));
@@ -16877,6 +16914,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            audit_logger: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);

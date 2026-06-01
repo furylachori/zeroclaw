@@ -33,7 +33,7 @@ pub fn validate_shell_command(
     command: &str,
     approved: bool,
 ) -> Result<()> {
-    let security = SecurityPolicy::for_agent(config, agent_alias)?;
+    let security = SecurityPolicy::for_agent(config, agent_alias, None)?;
     validate_shell_command_with_security(&security, command, approved)
 }
 

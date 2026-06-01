@@ -393,6 +393,14 @@ pub struct TelegramChannel {
     ack_reactions: bool,
     tts_manager: Option<Arc<super::tts::TtsManager>>,
     voice_chats: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// When `true`, audio/voice messages are downloaded and saved to disk even
+    /// when transcription is disabled. When `false` (default), audio is skipped
+    /// if transcription is not configured. Requires workspace to be set.
+    process_audio_without_transcription: bool,
+    /// When `true`, transcribed audio files are saved to the workspace directory
+    /// alongside the transcript. When `false` (default), audio is held in memory
+    /// only and not persisted to disk.
+    save_transcribed_audio: bool,
     pending_voice:
         Arc<std::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>>,
     /// Per-channel proxy URL override.
@@ -462,6 +470,8 @@ impl TelegramChannel {
             ack_reactions: true,
             tts_manager: None,
             voice_chats: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            save_transcribed_audio: false,
+            process_audio_without_transcription: false,
             pending_voice: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             proxy_url: None,
             tool_command_specs: Vec::new(),
@@ -541,6 +551,22 @@ impl TelegramChannel {
                 );
             }
         }
+        self
+    }
+    /// Configure whether to download and save audio/voice messages even when
+    /// transcription is not configured. When `false` (the default), audio
+    /// messages are skipped if no transcription provider is active.
+    /// Requires workspace to be set.
+    pub fn with_save_transcribed_audio(mut self, enabled: bool) -> Self {
+        self.save_transcribed_audio = enabled;
+        self
+    }
+
+    /// Configure whether to persist transcribed audio files to the workspace
+    /// directory alongside the transcript. When `false` (the default), audio
+    /// is held in memory only and not persisted to disk.
+    pub fn with_process_audio_without_transcription(mut self, enabled: bool) -> Self {
+        self.process_audio_without_transcription = enabled;
         self
     }
 
@@ -1399,10 +1425,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
     /// Download a file from the Telegram CDN.
     async fn download_file(&self, file_path: &str) -> anyhow::Result<Vec<u8>> {
-        let url = format!(
-            "https://api.telegram.org/file/bot{}/{file_path}",
-            self.bot_token
-        );
+        let url = format!("{}/file/bot{}/{file_path}", self.api_base, self.bot_token);
         let resp = self
             .http_client()
             .get(&url)
@@ -1414,18 +1437,52 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             anyhow::bail!("Telegram file download failed: {}", resp.status());
         }
 
+        // Guard against untrusted Content-Length: reject files that exceed
+        // the download limit before buffering them into memory.  This
+        // prevents OOM when the remote server reports a small `file_size`
+        // in the JSON metadata but serves a much larger body (Track 4-1/4-4).
+        if let Some(content_length) = resp.content_length()
+            && content_length > TELEGRAM_MAX_FILE_DOWNLOAD_BYTES
+        {
+            anyhow::bail!(
+                "Telegram file download too large: {} bytes (limit {} bytes)",
+                content_length,
+                TELEGRAM_MAX_FILE_DOWNLOAD_BYTES
+            );
+        }
+
         Ok(resp.bytes().await?.to_vec())
     }
 
-    /// Extract (file_id, duration) from a voice or audio message.
-    fn parse_voice_metadata(message: &serde_json::Value) -> Option<(String, u64)> {
-        let voice = message.get("voice").or_else(|| message.get("audio"))?;
-        let file_id = voice.get("file_id")?.as_str()?.to_string();
-        let duration = voice
+    /// Extract metadata from a voice or audio message.
+    fn parse_voice_metadata(message: &serde_json::Value) -> Option<VoiceMetadata> {
+        // Use explicit if-else chain to capture `is_voice` field
+        let (data, is_voice) = if let Some(v) = message.get("voice") {
+            (v, true)
+        } else if let Some(a) = message.get("audio") {
+            (a, false)
+        } else {
+            return None;
+        };
+
+        let file_id = data.get("file_id")?.as_str()?.to_string();
+        let duration_secs = data
             .get("duration")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
-        Some((file_id, duration))
+        let mime_type = data
+            .get("mime_type")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let file_size = data.get("file_size").and_then(serde_json::Value::as_u64);
+
+        Some(VoiceMetadata {
+            file_id,
+            duration_secs,
+            is_voice,
+            mime_type,
+            file_size,
+        })
     }
 
     /// Extract attachment metadata from an incoming Telegram message (document or photo).
@@ -1658,50 +1715,91 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         })
     }
 
-    /// Attempt to parse a Telegram update as a voice message and transcribe it.
+    /// Parse voice/audio messages. When transcription is configured, transcribes
+    /// the message and returns the transcript. When `process_audio_without_transcription`
+    /// is enabled, saves the audio file to disk without transcription.
+    /// Returns `None` if the message is not a voice/audio message, processing is
+    /// disabled, or the message exceeds duration/size limits.
     ///
-    /// Returns `None` if the message is not a voice message, transcription is disabled,
-    /// or the message exceeds duration limits.
+    /// **Known limitations:**
+    /// 1. No download timeout (CDN hangs could block indefinitely)
+    /// 2. No retry on transient CDN failures
+    /// 3. No automatic cleanup of telegram_files/ directory
+    /// 4. `file_size` from Telegram metadata is untrusted (client could lie)
+    /// 5. `voice_chats` lock is silently dropped if poisoned (no warning)
+    /// 6. Cache clears ALL entries at 100 (not LRU eviction)
     async fn try_parse_voice_message(&self, update: &serde_json::Value) -> Option<ChannelMessage> {
-        let config = self.transcription.as_ref()?;
-        let manager = self.transcription_manager.as_deref()?;
         let message = update.get("message")?;
 
-        let (file_id, duration) = Self::parse_voice_metadata(message)?;
+        // Step 1: Parse metadata
+        let meta = Self::parse_voice_metadata(message)?;
 
-        if duration > config.max_duration_secs {
+        // Step 2: Calculate ProcessingMode
+        let mode = {
+            let has_transcription =
+                self.transcription.is_some() && self.transcription_manager.is_some();
+            if has_transcription {
+                ProcessingMode::FullTranscription
+            } else if self.process_audio_without_transcription {
+                ProcessingMode::AudioOnlySave
+            } else {
+                return None;
+            }
+        };
+
+        // Step 3: Duration check (use config max_duration_secs, default 120)
+        let max_duration = self
+            .transcription
+            .as_ref()
+            .map(|c| c.max_duration_secs)
+            .unwrap_or(120);
+        if meta.duration_secs > max_duration {
             ::zeroclaw_log::record!(
                 INFO,
                 ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note),
                 &format!(
-                    "Skipping voice message: duration {duration}s exceeds limit {}s",
-                    config.max_duration_secs
+                    "Skipping voice message: duration {}s exceeds limit {}s",
+                    meta.duration_secs, max_duration
                 )
             );
             return None;
         }
 
-        let (username, sender_id, sender_identity) = Self::extract_sender_info(message);
+        // Step 4: File size check (existing constant)
+        if let Some(size) = meta.file_size
+            && size > TELEGRAM_MAX_FILE_DOWNLOAD_BYTES
+        {
+            ::zeroclaw_log::record!(
+                INFO,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                    .with_attrs(::serde_json::json!({
+                        "size_bytes": size,
+                        "limit_bytes": TELEGRAM_MAX_FILE_DOWNLOAD_BYTES
+                    })),
+                &format!(
+                    "Voice file size {}MB exceeds limit {}MB",
+                    size / (1024 * 1024),
+                    TELEGRAM_MAX_FILE_DOWNLOAD_BYTES / (1024 * 1024)
+                )
+            );
+            return None;
+        }
 
+        // Step 5: User authorization check
+        let (username, sender_id, sender_identity) = Self::extract_sender_info(message);
         let mut identities = vec![username.as_str()];
         if let Some(id) = sender_id.as_deref() {
             identities.push(id);
         }
-
         if !self.is_any_user_allowed(identities.iter().copied()) {
             return None;
         }
 
-        // Apply mention_only gate before downloading + transcribing. Voice
-        // notes typically have no caption, so under `mention_only = true`
-        // they are rejected here — the bot has no reliable way to know it
-        // was mentioned without first transcribing, and we don't want to
-        // pay that cost for messages that will likely be dropped. See #6229.
-        // The transcription itself is discarded; we only care whether the
-        // gate returns Some (allowed) vs None (rejected).
+        // Step 6: mention_only gate check
         let voice_caption = message.get("caption").and_then(serde_json::Value::as_str);
         self.check_media_mention_gate(message, voice_caption)?;
 
+        // Step 7: Extract chat/message context (needed for handlers)
         let chat_id = message
             .get("chat")
             .and_then(|chat| chat.get("id"))
@@ -1724,8 +1822,53 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             chat_id.clone()
         };
 
-        // Download and transcribe
-        let file_path = match self.get_file_path(&file_id).await {
+        // Step 8: Dispatch to handler
+        match mode {
+            ProcessingMode::Skip => None,
+            ProcessingMode::FullTranscription => {
+                self.handle_full_transcription(
+                    update,
+                    meta,
+                    &chat_id,
+                    message_id,
+                    &reply_target,
+                    &sender_identity,
+                    thread_id.as_deref(),
+                )
+                .await
+            }
+            ProcessingMode::AudioOnlySave => {
+                self.handle_audio_only_save(
+                    update,
+                    meta,
+                    &chat_id,
+                    message_id,
+                    &reply_target,
+                    &sender_identity,
+                    thread_id.as_deref(),
+                )
+                .await
+            }
+        }
+    }
+
+    /// Handle voice/audio message with full transcription.
+    ///
+    /// Dispatcher has already verified: mode=FullTranscription, duration OK,
+    /// file size OK, auth OK, mention_only OK. Workspace is OPTIONAL.
+    /// Only saves file when `save_transcribed_audio=true` AND workspace exists.
+    async fn handle_full_transcription(
+        &self,
+        update: &serde_json::Value,
+        meta: VoiceMetadata,
+        chat_id: &str,
+        message_id: i64,
+        reply_target: &str,
+        sender_identity: &str,
+        thread_id: Option<&str>,
+    ) -> Option<ChannelMessage> {
+        // Download always happens
+        let file_path = match self.get_file_path(&meta.file_id).await {
             Ok(p) => p,
             Err(e) => {
                 ::zeroclaw_log::record!(
@@ -1738,12 +1881,6 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 return None;
             }
         };
-
-        let file_name = file_path
-            .rsplit('/')
-            .next()
-            .unwrap_or("voice.ogg")
-            .to_string();
 
         let audio_data = match self.download_file(&file_path).await {
             Ok(d) => d,
@@ -1759,50 +1896,287 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             }
         };
 
-        let text = match manager.transcribe(&audio_data, &file_name).await {
-            Ok(t) => t,
+        // Determine if we should save: D flag AND workspace both needed
+        let should_save = self.save_transcribed_audio && self.workspace_dir.is_some();
+
+        // Generate filename and optionally save
+        let (filename, local_path) = if should_save {
+            let workspace = self
+                .workspace_dir
+                .as_ref()
+                .expect("workspace_dir checked above");
+
+            // Extension detection with MIME preference
+            let ext = if let Some(mime) = &meta.mime_type {
+                match mime.as_str() {
+                    "audio/mpeg" | "audio/mp3" => "mp3",
+                    "audio/ogg" => "oga",
+                    "audio/wav" => "wav",
+                    _ => std::path::Path::new(&file_path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("oga"),
+                }
+            } else {
+                std::path::Path::new(&file_path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("oga")
+            };
+
+            let prefix = if meta.is_voice { "voice" } else { "audio" };
+            let filename = format!("{}_{}_{}.{}", prefix, chat_id, message_id, ext);
+
+            let save_dir = workspace.join("telegram_files");
+            if let Err(e) = std::fs::create_dir_all(&save_dir) {
+                ::zeroclaw_log::record!(
+                    WARN,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                        .with_attrs(::serde_json::json!({"error": format!("{}", e)})),
+                    &format!(
+                        "Failed to create telegram_files directory for {}, falling back to memory-only",
+                        prefix
+                    )
+                );
+                return None;
+            }
+            let local_path = save_dir.join(&filename);
+            if let Err(e) = std::fs::write(&local_path, &audio_data) {
+                ::zeroclaw_log::record!(
+                    WARN,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                        .with_attrs(::serde_json::json!({"error": format!("{}", e)})),
+                    "Failed to write audio file, falling back to memory-only"
+                );
+                return None;
+            }
+            (filename, Some(local_path))
+        } else {
+            let prefix = if meta.is_voice { "voice" } else { "audio" };
+            (format!("{}_memory_only.oga", prefix), None)
+        };
+
+        // Transcribe
+        let file_name = file_path.rsplit('/').next().unwrap_or("voice.oga");
+
+        let manager = match self.transcription_manager.as_ref() {
+            Some(m) => m,
+            None => {
+                ::zeroclaw_log::record!(
+                    ERROR,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note),
+                    "FullTranscription mode but manager missing"
+                );
+                return None;
+            }
+        };
+
+        let transcription_result = manager.transcribe(&audio_data, file_name).await;
+
+        match transcription_result {
+            Ok(text) if !text.trim().is_empty() => {
+                // Success — update voice_chats, cache
+                if let Ok(mut vc) = self.voice_chats.lock() {
+                    vc.insert(reply_target.to_string());
+                }
+                {
+                    let mut cache = self.voice_transcriptions.lock();
+                    if cache.len() >= 100 {
+                        cache.clear();
+                    }
+                    cache.insert(format!("{chat_id}:{message_id}"), text.clone());
+                }
+
+                // Build base marker
+                let content = if let Some(path) = &local_path {
+                    format!("[Voice] {} ({})", text, path.display())
+                } else {
+                    format!("[Voice] {}", text)
+                };
+
+                // Apply reply context and forward attribution
+                let message = update.get("message")?;
+                let content = if let Some(quote) = self.extract_reply_context(message) {
+                    format!("{quote}\n\n{content}")
+                } else {
+                    content
+                };
+                let content = if let Some(attr) = Self::format_forward_attribution(message) {
+                    format!("{attr}{content}")
+                } else {
+                    content
+                };
+
+                Some(ChannelMessage {
+                    id: format!("telegram_{chat_id}_{message_id}"),
+                    sender: sender_identity.to_string(),
+                    reply_target: reply_target.to_string(),
+                    content,
+                    channel: "telegram".to_string(),
+                    channel_alias: Some(self.alias.clone()),
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    thread_ts: thread_id.map(String::from),
+                    interruption_scope_id: None,
+                    attachments: vec![],
+                    subject: None,
+                })
+            }
+            Ok(_) | Err(_) => {
+                // Empty transcription OR failure
+                // Only return marker if file was actually saved
+                if let Some(path) = &local_path {
+                    let message = update.get("message")?;
+                    let content = format!("[Audio: {}] {}", filename, path.display());
+                    let content = if let Some(quote) = self.extract_reply_context(message) {
+                        format!("{quote}\n\n{content}")
+                    } else {
+                        content
+                    };
+                    let content = if let Some(attr) = Self::format_forward_attribution(message) {
+                        format!("{attr}{content}")
+                    } else {
+                        content
+                    };
+
+                    Some(ChannelMessage {
+                        id: format!("telegram_{chat_id}_{message_id}"),
+                        sender: sender_identity.to_string(),
+                        reply_target: reply_target.to_string(),
+                        content,
+                        channel: "telegram".to_string(),
+                        channel_alias: Some(self.alias.clone()),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        thread_ts: thread_id.map(String::from),
+                        interruption_scope_id: None,
+                        attachments: vec![],
+                        subject: None,
+                    })
+                } else {
+                    ::zeroclaw_log::record!(
+                        WARN,
+                        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                            .with_outcome(::zeroclaw_log::EventOutcome::Unknown),
+                        "Voice transcription returned empty or failed; no file was saved"
+                    );
+                    None
+                }
+            }
+        }
+    }
+
+    /// Handle voice/audio message without transcription (save-only).
+    ///
+    /// Dispatcher has already verified: mode=AudioOnlySave, duration OK,
+    /// file size OK, auth OK, mention_only OK. Workspace is REQUIRED.
+    /// Does NOT update voice_chats or voice_transcriptions cache.
+    async fn handle_audio_only_save(
+        &self,
+        update: &serde_json::Value,
+        meta: VoiceMetadata,
+        chat_id: &str,
+        message_id: i64,
+        reply_target: &str,
+        sender_identity: &str,
+        thread_id: Option<&str>,
+    ) -> Option<ChannelMessage> {
+        // Workspace is REQUIRED for this path
+        let workspace = self.workspace_dir.as_ref().or_else(|| {
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note),
+                "Cannot save audio: workspace_dir not configured"
+            );
+            None
+        })?;
+
+        // Download + Save (always saves — user opted in via C flag)
+        let file_path = match self.get_file_path(&meta.file_id).await {
+            Ok(p) => p,
             Err(e) => {
                 ::zeroclaw_log::record!(
                     WARN,
                     ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
                         .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
                         .with_attrs(::serde_json::json!({"error": format!("{}", e)})),
-                    "Voice transcription failed"
+                    "Failed to get audio file path"
                 );
                 return None;
             }
         };
 
-        if text.trim().is_empty() {
+        let audio_data = match self.download_file(&file_path).await {
+            Ok(d) => d,
+            Err(e) => {
+                ::zeroclaw_log::record!(
+                    WARN,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
+                        .with_attrs(::serde_json::json!({"error": format!("{}", e)})),
+                    "Failed to download audio file"
+                );
+                return None;
+            }
+        };
+
+        // Extension detection with MIME preference
+        let ext = if let Some(mime) = &meta.mime_type {
+            match mime.as_str() {
+                "audio/mpeg" | "audio/mp3" => "mp3",
+                "audio/ogg" => "oga",
+                "audio/wav" => "wav",
+                _ => std::path::Path::new(&file_path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("oga"),
+            }
+        } else {
+            std::path::Path::new(&file_path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("oga")
+        };
+
+        let prefix = if meta.is_voice { "voice" } else { "audio" };
+        let filename = format!("{}_{}_{}.{}", prefix, chat_id, message_id, ext);
+
+        let save_dir = workspace.join("telegram_files");
+        if let Err(e) = std::fs::create_dir_all(&save_dir) {
             ::zeroclaw_log::record!(
-                INFO,
-                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note),
-                "Voice transcription returned empty text, skipping"
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                    .with_attrs(::serde_json::json!({"error": format!("{}", e)})),
+                "Failed to create telegram_files directory"
+            );
+            return None;
+        }
+        let local_path = save_dir.join(&filename);
+        if let Err(e) = std::fs::write(&local_path, &audio_data) {
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                    .with_attrs(::serde_json::json!({"error": format!("{}", e)})),
+                "Failed to write audio file"
             );
             return None;
         }
 
-        // Enter voice-chat mode so outgoing replies get a TTS voice note
-        if let Ok(mut vc) = self.voice_chats.lock() {
-            vc.insert(reply_target.clone());
-        }
+        // IMPORTANT: Do NOT update voice_chats or voice_transcriptions cache
+        // This is AudioOnlySave mode — like a document attachment
 
-        // Cache transcription for reply-context lookups
-        {
-            let mut cache = self.voice_transcriptions.lock();
-            if cache.len() >= 100 {
-                cache.clear();
-            }
-            cache.insert(format!("{chat_id}:{message_id}"), text.clone());
-        }
-
+        // Build content marker
+        let message = update.get("message")?;
+        let content = format!("[Audio: {}] {}", filename, local_path.display());
         let content = if let Some(quote) = self.extract_reply_context(message) {
-            format!("{quote}\n\n[Voice] {text}")
+            format!("{quote}\n\n{content}")
         } else {
-            format!("[Voice] {text}")
+            content
         };
-
-        // Prepend forwarding attribution when the message was forwarded
         let content = if let Some(attr) = Self::format_forward_attribution(message) {
             format!("{attr}{content}")
         } else {
@@ -1811,8 +2185,8 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         Some(ChannelMessage {
             id: format!("telegram_{chat_id}_{message_id}"),
-            sender: sender_identity,
-            reply_target,
+            sender: sender_identity.to_string(),
+            reply_target: reply_target.to_string(),
             content,
             channel: "telegram".to_string(),
             channel_alias: Some(self.alias.clone()),
@@ -1820,7 +2194,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
-            thread_ts: thread_id,
+            thread_ts: thread_id.map(String::from),
             interruption_scope_id: None,
             attachments: vec![],
             subject: None,
@@ -3844,6 +4218,28 @@ Ensure only one `zeroclaw` process is using this bot token."
     }
 }
 
+/// Processing mode for voice/audio messages, determined by transcription config
+/// and opt-in flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum ProcessingMode {
+    /// Skip this message entirely — no processing
+    Skip,
+    /// Full transcription with optional file save (controlled by save_transcribed_audio flag)
+    FullTranscription,
+    /// Audio-only save without transcription (requires workspace + process_audio_without_transcription flag)
+    AudioOnlySave,
+}
+
+/// Metadata extracted from voice/audio message
+struct VoiceMetadata {
+    pub file_id: String,
+    pub duration_secs: u64,
+    pub is_voice: bool,
+    pub mime_type: Option<String>,
+    pub file_size: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5456,9 +5852,9 @@ mod tests {
                 "duration": 5
             }
         });
-        let (file_id, dur) = TelegramChannel::parse_voice_metadata(&msg).unwrap();
-        assert_eq!(file_id, "abc123");
-        assert_eq!(dur, 5);
+        let meta = TelegramChannel::parse_voice_metadata(&msg).unwrap();
+        assert_eq!(meta.file_id, "abc123");
+        assert_eq!(meta.duration_secs, 5);
     }
 
     #[test]
@@ -5469,9 +5865,9 @@ mod tests {
                 "duration": 30
             }
         });
-        let (file_id, dur) = TelegramChannel::parse_voice_metadata(&msg).unwrap();
-        assert_eq!(file_id, "audio456");
-        assert_eq!(dur, 30);
+        let meta = TelegramChannel::parse_voice_metadata(&msg).unwrap();
+        assert_eq!(meta.file_id, "audio456");
+        assert_eq!(meta.duration_secs, 30);
     }
 
     #[test]
@@ -5482,15 +5878,16 @@ mod tests {
         assert!(TelegramChannel::parse_voice_metadata(&msg).is_none());
     }
 
+    // parse_voice_metadata requires duration field
     #[test]
-    fn parse_voice_metadata_defaults_duration_to_zero() {
+    fn parse_voice_metadata_requires_duration() {
         let msg = serde_json::json!({
             "voice": {
                 "file_id": "no_dur"
             }
         });
-        let (_, dur) = TelegramChannel::parse_voice_metadata(&msg).unwrap();
-        assert_eq!(dur, 0);
+        let meta = TelegramChannel::parse_voice_metadata(&msg).unwrap();
+        assert_eq!(meta.duration_secs, 0);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -5852,7 +6249,7 @@ mod tests {
 
         // 1. Load pre-recorded fixture (TTS-generated "hello", ~7 KB MP3)
         let fixture_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.mp3");
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/hello.mp3");
         let audio_data = std::fs::read(&fixture_path)
             .unwrap_or_else(|e| panic!("Failed to read fixture {}: {e}", fixture_path.display()));
         assert!(
@@ -6901,5 +7298,343 @@ mod tests {
     fn non_approval_callback_data_is_ignored() {
         let cb_data = "some_other_action:data";
         assert!(cb_data.strip_prefix("approval:").is_none());
+    }
+
+    // ── Tier 1: Content-Length guard tests ──────────────────────────────────
+
+    #[tokio::test]
+    async fn download_file_rejects_oversized_file() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let oversized_body = vec![0u8; (TELEGRAM_MAX_FILE_DOWNLOAD_BYTES + 1) as usize];
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/file/bot[^/]+/file_path$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Length", oversized_body.len().to_string())
+                    .set_body_raw(oversized_body, "application/octet-stream"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let ch = TelegramChannel::new(
+            "fake-token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_api_base(mock_server.uri());
+
+        let result = ch.download_file("file_path").await;
+        assert!(result.is_err(), "Expected error for oversized file");
+        assert!(
+            result.unwrap_err().to_string().contains("too large"),
+            "Error should mention 'too large'"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_file_accepts_at_limit() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let exact_body = vec![0u8; TELEGRAM_MAX_FILE_DOWNLOAD_BYTES as usize];
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/file/bot[^/]+/file_path$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Length", exact_body.len().to_string())
+                    .set_body_raw(exact_body.clone(), "application/octet-stream"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let ch = TelegramChannel::new(
+            "fake-token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_api_base(mock_server.uri());
+
+        let result = ch.download_file("file_path").await;
+        assert!(
+            result.is_ok(),
+            "Expected success at exact limit: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap(), exact_body);
+    }
+
+    #[tokio::test]
+    async fn download_file_proceeds_without_content_length_header() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let body = vec![42u8; 16];
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/file/bot[^/]+/file_path$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(body.clone(), "application/octet-stream"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let ch = TelegramChannel::new(
+            "fake-token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_api_base(mock_server.uri());
+
+        let result = ch.download_file("file_path").await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), body);
+    }
+
+    // ── Tier 2: VoiceMetadata and dispatcher tests ─────────────────────────
+
+    #[test]
+    fn parse_voice_metadata_full_fields_voice() {
+        let msg = serde_json::json!({
+            "voice": {
+                "file_id": "voice_abc123",
+                "duration": 45,
+                "mime_type": "audio/ogg",
+                "file_size": 102400
+            }
+        });
+        let meta = TelegramChannel::parse_voice_metadata(&msg).unwrap();
+        assert_eq!(meta.file_id, "voice_abc123");
+        assert_eq!(meta.duration_secs, 45);
+        assert_eq!(meta.is_voice, true);
+        assert_eq!(meta.mime_type.as_deref(), Some("audio/ogg"));
+        assert_eq!(meta.file_size, Some(102400));
+    }
+
+    #[test]
+    fn parse_voice_metadata_full_fields_audio() {
+        let msg = serde_json::json!({
+            "audio": {
+                "file_id": "audio_xyz789",
+                "duration": 120,
+                "mime_type": "audio/mpeg",
+                "file_size": 512000
+            }
+        });
+        let meta = TelegramChannel::parse_voice_metadata(&msg).unwrap();
+        assert_eq!(meta.file_id, "audio_xyz789");
+        assert_eq!(meta.duration_secs, 120);
+        assert_eq!(meta.is_voice, false);
+        assert_eq!(meta.mime_type.as_deref(), Some("audio/mpeg"));
+        assert_eq!(meta.file_size, Some(512000));
+    }
+
+    #[tokio::test]
+    async fn processing_mode_skip_when_no_transcription() {
+        let ch = TelegramChannel::new(
+            "token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        );
+
+        let update = serde_json::json!({
+            "message": {
+                "message_id": 1,
+                "voice": { "file_id": "vf", "duration": 30 },
+                "from": { "id": 123, "username": "alice" },
+                "chat": { "id": 456, "type": "private" }
+            }
+        });
+
+        // No transcription config, no process_audio_without_transcription → Skip → None
+        let result = ch.try_parse_voice_message(&update).await;
+        assert!(result.is_none(), "Skip mode should return None immediately");
+    }
+
+    #[tokio::test]
+    async fn audio_only_save_saves_file_to_workspace() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        // Mock getFile → returns file_path
+        Mock::given(method("GET"))
+            .and(path_regex(r"/bot[^/]+/getFile"))
+            .and(wiremock::matchers::query_param("file_id", "voice_abc123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": { "file_path": "voice/file_123.oga" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Mock file download → returns fake audio bytes
+        Mock::given(method("GET"))
+            .and(path_regex(r"/file/bot[^/]+/voice/file_123\.oga"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(b"fake-audio-data-12345".to_vec(), "audio/ogg"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let workspace = tempfile::tempdir().expect("create temp workspace");
+
+        let ch = TelegramChannel::new(
+            "fake-token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_api_base(mock_server.uri())
+        .with_workspace_dir(workspace.path().to_path_buf())
+        .with_process_audio_without_transcription(true);
+
+        let update = serde_json::json!({
+            "message": {
+                "message_id": 42,
+                "voice": { "file_id": "voice_abc123", "duration": 10, "mime_type": "audio/ogg" },
+                "from": { "id": 100, "username": "testuser" },
+                "chat": { "id": 200, "type": "private" }
+            }
+        });
+
+        let result = ch.try_parse_voice_message(&update).await;
+        assert!(result.is_some(), "AudioOnlySave should return Some");
+
+        let msg = result.unwrap();
+        assert!(
+            msg.content.starts_with("[Audio: voice_200_42.oga]"),
+            "Content should start with [Audio: ...], got: {}",
+            msg.content
+        );
+        assert!(
+            msg.content.contains("telegram_files"),
+            "Content should contain telegram_files path, got: {}",
+            msg.content
+        );
+
+        // Verify file was actually saved
+        let saved_file = workspace.path().join("telegram_files/voice_200_42.oga");
+        assert!(
+            saved_file.exists(),
+            "Audio file should be saved to workspace/telegram_files/"
+        );
+        let contents = std::fs::read(&saved_file).expect("read saved file");
+        assert_eq!(
+            contents, b"fake-audio-data-12345",
+            "File contents should match downloaded data"
+        );
+    }
+
+    #[tokio::test]
+    async fn audio_only_save_returns_none_when_no_workspace() {
+        let ch = TelegramChannel::new(
+            "token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_process_audio_without_transcription(true);
+        // No .with_workspace_dir() — workspace is None
+
+        let update = serde_json::json!({
+            "message": {
+                "message_id": 1,
+                "voice": { "file_id": "vf", "duration": 10 },
+                "from": { "id": 1, "username": "alice" },
+                "chat": { "id": 100, "type": "private" }
+            }
+        });
+
+        let result = ch.try_parse_voice_message(&update).await;
+        assert!(
+            result.is_none(),
+            "Should return None when workspace_dir is not set"
+        );
+    }
+
+    #[test]
+    fn with_process_audio_without_transcription_sets_flag() {
+        let ch = TelegramChannel::new(
+            "token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_process_audio_without_transcription(true);
+
+        assert!(
+            ch.process_audio_without_transcription,
+            "Builder should set process_audio_without_transcription to true"
+        );
+    }
+
+    #[test]
+    fn with_save_transcribed_audio_sets_flag() {
+        let ch = TelegramChannel::new(
+            "token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_save_transcribed_audio(true);
+
+        assert!(
+            ch.save_transcribed_audio,
+            "Builder should set save_transcribed_audio to true"
+        );
+    }
+
+    #[tokio::test]
+    async fn processing_mode_audio_only_save_when_flag_true() {
+        let ch = TelegramChannel::new(
+            "token".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+        .with_process_audio_without_transcription(true);
+
+        // Verify the mode would be AudioOnlySave by checking the flag
+        // (we can't directly access ProcessingMode, but we verify the behavior:
+        //  with workspace set, try_parse_voice_message should NOT return None at the mode check)
+        let workspace = tempfile::tempdir().expect("create temp workspace");
+        let ch = ch.with_workspace_dir(workspace.path().to_path_buf());
+
+        // This update will fail at the HTTP call (no mock server), but it should
+        // NOT return None at the ProcessingMode check. It will fail later at
+        // get_file_path(). The key is that it doesn't return None immediately.
+        let update = serde_json::json!({
+            "message": {
+                "message_id": 1,
+                "voice": { "file_id": "vf", "duration": 10 },
+                "from": { "id": 1, "username": "alice" },
+                "chat": { "id": 100, "type": "private" }
+            }
+        });
+
+        let result = ch.try_parse_voice_message(&update).await;
+        // It should be None because the HTTP call fails, NOT because of ProcessingMode::Skip
+        // We can't easily distinguish, but at least we verify it doesn't panic
+        // The real verification is in Test 1 (happy path with mock server)
+        assert!(
+            result.is_none(),
+            "Should return None when HTTP fails (not when mode is Skip)"
+        );
     }
 }

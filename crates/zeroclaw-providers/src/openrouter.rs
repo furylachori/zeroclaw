@@ -408,7 +408,7 @@ impl OpenRouterModelProvider {
         response: reqwest::Response,
     ) -> anyhow::Result<String> {
         response.text().await.map_err(|error| {
-            let sanitized = super::format_error_chain(&error);
+            let sanitized = super::sanitize_api_error(&format!("{}", error));
             ::zeroclaw_log::record!(
                 ERROR,
                 ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
@@ -850,9 +850,7 @@ impl ModelProvider for OpenRouterModelProvider {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = tx
-                        .send(Err(StreamError::Http(super::format_error_chain(&e))))
-                        .await;
+                    let _ = tx.send(Err(StreamError::Http(e.to_string()))).await;
                     return;
                 }
             };
