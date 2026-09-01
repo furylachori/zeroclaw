@@ -105,6 +105,8 @@ mod tests {
             excluded_tools: vec![],
             reply_min_interval_secs: 0,
             reply_queue_depth_max: 0,
+            process_audio_without_transcription: false,
+            save_transcribed_audio: false,
             debounce_ms: None,
         };
 

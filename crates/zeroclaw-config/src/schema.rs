@@ -14969,6 +14969,21 @@ pub struct TelegramConfig {
     /// newest send is dropped and a `WARN` is logged.
     #[serde(default)]
     pub reply_queue_depth_max: u16,
+    /// When `true`, inbound voice/audio messages are downloaded and saved to
+    /// the workspace even when no transcription backend is configured. The
+    /// file path is exposed to the agent as message content; the agent then
+    /// invokes whichever registered transcription skill/tool it has available
+    /// to convert the audio before interpreting it as a user command.
+    /// Requires `workspace` to be set. Default: `false`.
+    #[tab(Behavior)]
+    #[serde(default)]
+    pub process_audio_without_transcription: bool,
+    /// When `true`, transcribed audio files are saved to the workspace
+    /// alongside the transcript. When `false` (default), audio is held in
+    /// memory only and not persisted to disk.
+    #[tab(Behavior)]
+    #[serde(default)]
+    pub save_transcribed_audio: bool,
 }
 
 impl Default for TelegramConfig {
@@ -14987,6 +15002,8 @@ impl Default for TelegramConfig {
             excluded_tools: Vec::new(),
             reply_min_interval_secs: 0,
             reply_queue_depth_max: 0,
+            process_audio_without_transcription: false,
+            save_transcribed_audio: false,
             debounce_ms: None,
         }
     }
@@ -28204,6 +28221,8 @@ auto_save = true
                         excluded_tools: vec![],
                         reply_min_interval_secs: 0,
                         reply_queue_depth_max: 0,
+                        process_audio_without_transcription: false,
+                        save_transcribed_audio: false,
                     },
                 )]),
                 discord: HashMap::new(),
@@ -29738,6 +29757,8 @@ default_temperature = 0.7
             excluded_tools: vec![],
             reply_min_interval_secs: 0,
             reply_queue_depth_max: 0,
+            process_audio_without_transcription: false,
+            save_transcribed_audio: false,
             debounce_ms: None,
         };
         let json = serde_json::to_string(&tc).unwrap();
@@ -35154,6 +35175,8 @@ high_entropy_tokens = false
                 excluded_tools: vec![],
                 reply_min_interval_secs: 0,
                 reply_queue_depth_max: 0,
+                process_audio_without_transcription: false,
+                save_transcribed_audio: false,
                 debounce_ms: None,
             },
         );

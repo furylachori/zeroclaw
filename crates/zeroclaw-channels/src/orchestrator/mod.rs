@@ -9058,6 +9058,7 @@ fn build_channel_by_id(
                 .with_transcription(config.transcription.clone())
                 .with_tts(&config)
                 .with_workspace_dir(workspace_dir)
+                .with_process_audio_without_transcription(tg.process_audio_without_transcription)
                 .with_approval_timeout_secs(tg.approval_timeout_secs),
             ))
         }
@@ -10279,6 +10280,9 @@ fn collect_configured_channels(
                     )
                     .with_tts(&config)
                     .with_workspace_dir(config.channel_workspace_dir(&format!("telegram.{alias}")))
+                    .with_process_audio_without_transcription(
+                        tg.process_audio_without_transcription,
+                    )
                     .with_proxy_url(tg.proxy_url.clone())
                     .with_tool_command_specs(tool_specs.to_vec())
                     .with_approval_timeout_secs(tg.approval_timeout_secs),
@@ -32729,6 +32733,8 @@ This is an example JSON object for profile settings."#;
                 excluded_tools: vec![],
                 reply_min_interval_secs: 0,
                 reply_queue_depth_max: 0,
+                process_audio_without_transcription: false,
+                save_transcribed_audio: false,
                 debounce_ms: None,
             },
         );
@@ -32758,6 +32764,8 @@ This is an example JSON object for profile settings."#;
                 excluded_tools: vec![],
                 reply_min_interval_secs: 0,
                 reply_queue_depth_max: 0,
+                process_audio_without_transcription: false,
+                save_transcribed_audio: false,
                 debounce_ms: None,
             },
         );
